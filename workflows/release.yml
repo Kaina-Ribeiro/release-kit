@@ -1,0 +1,117 @@
+# Release automation: rc tags and sync PRs on version lines, final tags on release day,
+# manual cuts of new release and hotfix lines. Logic lives in .github/scripts/release.mjs;
+# rules in RELEASING.md.
+#
+# Token: secrets.RELEASE_TOKEN if set (a GitHub App token or an admin's fine-grained PAT), else
+# GITHUB_TOKEN. With GITHUB_TOKEN, sync PRs, tags and branches it creates do not trigger other
+# workflows, so required checks never run on sync PRs. See RELEASING.md, "Setup".
+name: Release
+
+on:
+  push:
+    branches: ['release/v*', 'hotfix/v*']
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      command:
+        description: What to cut
+        type: choice
+        options: [cut-release, cut-hotfix]
+        required: true
+      version:
+        description: 'cut-release only: force X.Y (e.g. 1.0). Empty = next minor.'
+        type: string
+        required: false
+        default: ''
+      dry_run:
+        description: Only print what would happen
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+jobs:
+  rc:
+    if: github.event_name == 'push' && !github.event.deleted
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-line-${{ github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+      - name: Configure git
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Tag release candidate
+        run: node .github/scripts/release.mjs rc --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
+      - name: Open sync PR
+        run: node .github/scripts/release.mjs sync --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
+
+  final:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      (startsWith(github.event.pull_request.head.ref, 'release/v') ||
+       startsWith(github.event.pull_request.head.ref, 'hotfix/v'))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-final
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+      - name: Configure git
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Tag final release
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: node .github/scripts/release.mjs final --head "$HEAD_REF" --sha "$MERGE_SHA"
+
+  cut:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-cut
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+      - name: Cut version line
+        env:
+          COMMAND: ${{ inputs.command }}
+          VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=("$COMMAND")
+          if [ -n "$VERSION" ]; then args+=(--version "$VERSION"); fi
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          node .github/scripts/release.mjs "${args[@]}"
