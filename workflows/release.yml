@@ -52,6 +52,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: lts/*
+          package-manager-cache: false
       - name: Configure git
         run: |
           git config user.name 'github-actions[bot]'
@@ -81,6 +82,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: lts/*
+          package-manager-cache: false
       - name: Configure git
         run: |
           git config user.name 'github-actions[bot]'
@@ -105,6 +107,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: lts/*
+          package-manager-cache: false
       - name: Cut version line
         env:
           COMMAND: ${{ inputs.command }}
