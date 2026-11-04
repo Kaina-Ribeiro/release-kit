@@ -1,10 +1,12 @@
-# Release automation: rc tags and sync PRs on version lines, final tags on release day,
-# manual cuts of new release and hotfix lines. Logic lives in .github/scripts/release.mjs;
+# Release automation: rc tags and sync PRs on version lines, a test-stage deploy of each rc,
+# final tags on release day, manual cuts and deploys. Logic lives in .github/scripts/release.mjs;
 # rules in RELEASING.md.
 #
 # Token: secrets.RELEASE_TOKEN if set (a GitHub App token or an admin's fine-grained PAT), else
 # GITHUB_TOKEN. With GITHUB_TOKEN, sync PRs, tags and branches it creates do not trigger other
 # workflows, so required checks never run on sync PRs. See RELEASING.md, "Setup".
+# Deploys (optional): vars.CUBESHIP_URL, vars.DEPLOY_TEST_APPS, vars.DEPLOY_PROD_APPS and
+# secrets.CUBESHIP_TOKEN. Without DEPLOY_*_APPS nothing is deployed.
 name: Release
 
 on:
@@ -15,12 +17,22 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: What to cut
+        description: What to do
         type: choice
-        options: [cut-release, cut-hotfix]
+        options: [cut-release, cut-hotfix, deploy]
         required: true
       version:
         description: 'cut-release only: force X.Y (e.g. 1.0). Empty = next minor.'
+        type: string
+        required: false
+        default: ''
+      stage:
+        description: 'deploy only: where to'
+        type: choice
+        options: [test, prod]
+        default: test
+      tag:
+        description: 'deploy only: the tag. Empty = last rc of the newest open release.'
         type: string
         required: false
         default: ''
@@ -36,6 +48,10 @@ permissions:
 env:
   DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
   GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+  CUBESHIP_URL: ${{ vars.CUBESHIP_URL }}
+  CUBESHIP_TOKEN: ${{ secrets.CUBESHIP_TOKEN }}
+  DEPLOY_TEST_APPS: ${{ vars.DEPLOY_TEST_APPS }}
+  DEPLOY_PROD_APPS: ${{ vars.DEPLOY_PROD_APPS }}
 
 jobs:
   rc:
@@ -61,6 +77,24 @@ jobs:
         run: node .github/scripts/release.mjs rc --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
       - name: Open sync PR
         run: node .github/scripts/release.mjs sync --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
+
+  deploy-test:
+    needs: rc
+    if: vars.DEPLOY_TEST_APPS != ''
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-deploy-test
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          package-manager-cache: false
+      - name: Deploy the line's last rc to the test stage
+        run: node .github/scripts/release.mjs deploy --stage test --branch "$GITHUB_REF_NAME"
 
   final:
     if: >-
@@ -93,8 +127,33 @@ jobs:
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: node .github/scripts/release.mjs final --head "$HEAD_REF" --sha "$MERGE_SHA"
 
+  deploy:
+    if: github.event_name == 'workflow_dispatch' && inputs.command == 'deploy'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-deploy-${{ inputs.stage }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          package-manager-cache: false
+      - name: Deploy
+        env:
+          STAGE: ${{ inputs.stage }}
+          TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(deploy --stage "$STAGE")
+          if [ -n "$TAG" ]; then args+=("$TAG"); fi
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          node .github/scripts/release.mjs "${args[@]}"
+
   cut:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.command != 'deploy'
     runs-on: ubuntu-latest
     concurrency:
       group: release-cut

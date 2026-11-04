@@ -98,6 +98,35 @@ r rc --branch release/v0.3 --dry-run
 commit_on release/v0.3 "feat(ABC-7): after the tag format change"
 r rc --branch release/v0.3 --dry-run
 r deploy-check v0.3.0-rc.1
+r deploy-check v0.3.0-rc.1 --prod
 
-echo; echo "=== 8. final state"
+echo; echo "=== 8. deploys to a test stage (against test/cubeship-mock.mjs)"
+port=47123
+node "$kit/test/cubeship-mock.mjs" "$port" "$scratch/work" &
+mock=$!
+trap 'kill $mock 2>/dev/null' EXIT
+sleep 1
+export CUBESHIP_URL="http://127.0.0.1:$port" CUBESHIP_TOKEN=test-key
+export DEPLOY_TEST_APPS="demo/test/api demo/test/web" DEPLOY_PROD_APPS="demo/prod/api,demo/prod/web"
+tag v0.3.1-rc origin/release/v0.3
+r deploy --stage test --dry-run
+r deploy --stage test --branch release/v0.3
+r deploy --stage test --branch release/v0.3
+r deploy --stage prod v0.3.0-rc.1
+r deploy-check v0.3.1-rc --prod
+
+echo; echo "=== 9. release day: prod gets the last rc first, the merge only tags it"
+git checkout --quiet -B release/v0.3 origin/release/v0.3
+git merge --quiet --no-ff -X ours "origin/$def" -m "Merge $def into release/v0.3"
+git push --quiet origin release/v0.3; echo "  [fixture] merged $def into release/v0.3"
+tag v0.3.2-rc origin/release/v0.3
+r deploy --stage test --branch release/v0.3
+merge_into_default release/v0.3
+r final --head release/v0.3 --dry-run
+r deploy --stage prod
+r final --head release/v0.3 --dry-run
+kill $mock 2>/dev/null
+unset CUBESHIP_URL CUBESHIP_TOKEN DEPLOY_TEST_APPS DEPLOY_PROD_APPS
+
+echo; echo "=== 10. final state"
 r status
