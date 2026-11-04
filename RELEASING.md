@@ -36,7 +36,9 @@ How code moves from a pull request to production in this repository. The automat
    Reapply it in the next release by reverting the revert.
 3. **New release**: Actions → Release → Run workflow → `cut-release`. It branches from the
    newest open release, or from the default branch if none is open. Never create `release/*`
-   by hand. `version` forces a line such as `1.0` for a major bump.
+   by hand. `version` forces a line such as `1.0` for a major bump. A fresh line has no new
+   code, so it gets no rc (and no test deploy) until the first PR merges into it: a commit that
+   already carries a release tag (final or rc, any line) never becomes an rc.
 4. **Release day**: prod gets the rc you tested, then the merge only records it.
    1. Test the line's last rc on the test stage.
    2. Actions → Release → Run workflow, **from the release branch** → `deploy`, stage `prod`,
@@ -47,7 +49,8 @@ How code moves from a pull request to production in this repository. The automat
       that rc's version as final (`v0.2.2-rc` → `v0.2.2`) with release notes, without deploying
       again, and deletes the shipped branch.
 5. **Hotfix**: Actions → Release → `cut-hotfix` (branches from the final tag in prod; if the
-   branch already exists it is reused). Fix PRs into `hotfix/vX.Y` (squash) → test the rc →
+   branch already exists it is reused; it gets its first rc with the first fix, never at the
+   final tag itself). Fix PRs into `hotfix/vX.Y` (squash) → test the rc →
    `deploy` to prod with that rc's tag → PR into the default branch (merge commit) → the last
    rc's `vX.Y.Z`, and the branch is deleted.
 6. **Sync PRs** (`chore(sync): merge A into B`, opened automatically): review and merge with a
@@ -58,7 +61,8 @@ How code moves from a pull request to production in this repository. The automat
 Every stage runs a **tag**, never a branch: you always know what is live, and rollback is
 pointing back at the previous tag.
 
-- Test stage: any `vX.Y.Z-rc` or `vX.Y.Z`, any time. Each new rc deploys there by itself.
+- Test stage: any `vX.Y.Z-rc` or `vX.Y.Z`, any time. Each new rc deploys there by itself; a
+  push that makes no rc (a cut) deploys nothing.
 - Prod: the last rc of an open line (release day, before the merge), or a final `vX.Y.Z` whose
   code equals its rc (rollback). An older rc is refused.
 - The `final` tag is created only if prod already runs the line's last rc (when prod deploys

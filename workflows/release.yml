@@ -57,6 +57,10 @@ jobs:
   rc:
     if: github.event_name == 'push' && !github.event.deleted
     runs-on: ubuntu-latest
+    outputs:
+      # This line's rc on the pushed commit; empty when the commit already carried another release
+      # tag (a cut: no new code), so deploy-test is skipped.
+      tag: ${{ steps.rc.outputs.tag }}
     concurrency:
       group: release-line-${{ github.ref_name }}
       cancel-in-progress: false
@@ -74,13 +78,14 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
       - name: Tag release candidate
+        id: rc
         run: node .github/scripts/release.mjs rc --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
       - name: Open sync PR
         run: node .github/scripts/release.mjs sync --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
 
   deploy-test:
     needs: rc
-    if: vars.DEPLOY_TEST_APPS != ''
+    if: vars.DEPLOY_TEST_APPS != '' && needs.rc.outputs.tag != ''
     runs-on: ubuntu-latest
     concurrency:
       group: release-deploy-test
