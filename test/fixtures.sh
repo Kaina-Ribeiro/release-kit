@@ -63,6 +63,14 @@ r conventions --head revert-12-feat/ABC-3-login --base release/v0.2 --title 'Rev
 r conventions --head release/v0.2 --base release/v0.3 --title "chore(sync): merge release/v0.2 into release/v0.3"
 r conventions --head release/v0.2 --base "$def" --title "chore(release): ship release/v0.2"
 
+echo; echo "=== 3b. merged feature branches are deleted; version lines are kept"
+branch feat/ABC-3-login origin/release/v0.2
+r cleanup --head feat/ABC-3-login --base release/v0.2 --dry-run
+r cleanup --head feat/ABC-3-login --base release/v0.2
+r cleanup --head feat/ABC-3-login --base release/v0.2
+r cleanup --head release/v0.2 --base release/v0.3
+r cleanup --head feat/ABC-3-login --base "$def"
+
 echo; echo "=== 4. release day, with an untested commit first"
 commit_on release/v0.2 "fix(ABC-5): untested"
 merge_into_default release/v0.2

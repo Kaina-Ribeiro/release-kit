@@ -11,6 +11,8 @@
 //   cut-release  create the next release/vX.Y from the newest open release (or the default branch)
 //   cut-hotfix   create hotfix/vX.Y from the final tag in prod
 //   conventions  check a PR's branch name, title and target (used by the PR checks workflow)
+//   cleanup      delete a feature/fix branch once its PR is merged into a version line
+//                (version lines and the default branch are never deleted here)
 //   deploy-check gate a deploy: any release tag for test stages; --prod only for the last rc of an
 //                open line, or a final whose code equals its rc (rollback)
 //   deploy       deploy a release tag to the test or prod apps on Cubeship (passes deploy-check first)
@@ -80,6 +82,8 @@ const branchExists = (branch) => gitOk('rev-parse', '--verify', '--quiet', remot
 const commitOf = (ref) => git('rev-parse', `${ref}^{commit}`);
 const treeOf = (ref) => git('rev-parse', `${ref}^{tree}`);
 const isAncestor = (a, b) => gitOk('merge-base', '--is-ancestor', a, b);
+// Asks the remote itself, so it holds in shallow checkouts that never fetched that branch.
+const remoteHasBranch = (branch) => git('ls-remote', '--heads', 'origin', `refs/heads/${branch}`) !== '';
 
 let defaultBranchCache;
 function defaultBranch() {
@@ -221,7 +225,7 @@ function createBranch(name, sha) {
 // A shipped line takes no more rcs and hotfixes branch from the final tag, so its branch goes.
 // Never fatal: the final tag is already out, and a leftover branch only needs a manual delete.
 function deleteBranch(name) {
-  if (!branchExists(name)) return;
+  if (!remoteHasBranch(name)) return;
   act(`delete branch ${name}`);
   if (dryRun) return;
   try { git('push', 'origin', '--delete', name); } catch (err) {
@@ -558,6 +562,19 @@ function checkDeploy(name, prod) {
   return tag;
 }
 
+// A feature/fix branch is done once squashed into a version line. Version lines stay (a sync PR
+// has one as head) and only `final` deletes them, after their tag; the default branch always stays.
+function cmdCleanup() {
+  const head = opts.head ?? process.env.HEAD_REF ?? '';
+  const base = opts.base ?? process.env.BASE_REF ?? '';
+  if (!head) fail('cleanup needs --head <merged branch> and --base <its target>');
+  if (!parseLine(base)) { log(`✓ ${base || '(no base)'} is not a version line; nothing to clean`); return; }
+  if (parseLine(head) || head === defaultBranch()) { log(`✓ ${head} is a version line or the default branch; kept`); return; }
+  if (!remoteHasBranch(head)) { log(`✓ ${head} is already gone`); return; }
+  deleteBranch(head);
+  outcome(`Deleted \`${head}\` (merged into \`${base}\`)`, `delete \`${head}\` (merged into \`${base}\`)`);
+}
+
 function cmdDeployCheck() {
   const name = opts._[0] || process.env.DEPLOY_TAG;
   if (!name) fail('deploy-check needs a tag: deploy-check vX.Y.Z[-rc] [--prod]');
@@ -610,7 +627,8 @@ function cmdStatus() {
 
 const COMMANDS = {
   rc: cmdRc, sync: cmdSync, final: cmdFinal, 'cut-release': cmdCutRelease, 'cut-hotfix': cmdCutHotfix,
-  conventions: cmdConventions, 'deploy-check': cmdDeployCheck, deploy: cmdDeploy, status: cmdStatus,
+  conventions: cmdConventions, cleanup: cmdCleanup, 'deploy-check': cmdDeployCheck, deploy: cmdDeploy,
+  status: cmdStatus,
 };
 
 try {

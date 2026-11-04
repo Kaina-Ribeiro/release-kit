@@ -127,6 +127,29 @@ jobs:
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: node .github/scripts/release.mjs final --head "$HEAD_REF" --sha "$MERGE_SHA"
 
+  cleanup:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (startsWith(github.event.pull_request.base.ref, 'release/v') ||
+       startsWith(github.event.pull_request.base.ref, 'hotfix/v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          package-manager-cache: false
+      - name: Delete the merged branch
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: node .github/scripts/release.mjs cleanup --head "$HEAD_REF" --base "$BASE_REF"
+
   deploy:
     if: github.event_name == 'workflow_dispatch' && inputs.command == 'deploy'
     runs-on: ubuntu-latest
