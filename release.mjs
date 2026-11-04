@@ -63,6 +63,8 @@ const warn = (msg) => log(inActions ? `::warning::${msg}` : `warning: ${msg}`);
 function summary(md) {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${md}\n`);
 }
+// The job summary of a change: what was done, or under --dry-run what would have been.
+const outcome = (done, would) => summary(dryRun ? `**Dry run, nothing changed.** Would ${would}` : done);
 
 // ---------- git ----------
 
@@ -366,7 +368,8 @@ async function cmdRc() {
   log(`${branch} → ${tag} (${last ? `last rc ${last.name}` : 'first rc'})`);
   createTag(tag, sha, `Release candidate ${tag} from ${branch}`);
   await createRelease(tag, sha, previous, true);
-  summary(`Release candidate **${tag}** from \`${branch}\` (${sha.slice(0, 12)})`);
+  outcome(`Release candidate **${tag}** from \`${branch}\` (${sha.slice(0, 12)})`,
+    `tag **${tag}** on \`${branch}\` (${sha.slice(0, 12)})`);
 }
 
 async function cmdSync() {
@@ -416,7 +419,8 @@ async function cmdFinal() {
   createTag(tag, sha, `Release ${tag} (from ${head}, same code as ${lastRc.name})`);
   await createRelease(tag, sha, previous, false);
   deleteBranch(head);
-  summary(`Shipped **${tag}** from \`${head}\` (same code as ${lastRc.name})`);
+  outcome(`Shipped **${tag}** from \`${head}\` (same code as ${lastRc.name})`,
+    `ship **${tag}** from \`${head}\` (same code as ${lastRc.name})`);
 }
 
 // The final only records what prod already runs: the line's last rc, deployed before the merge.
@@ -463,7 +467,7 @@ async function cmdCutRelease() {
   log(`open releases: ${open.map((r) => r.name).join(', ') || 'none'}; latest shipped: ${shipped?.name ?? 'none'}`);
   log(`${branch} branches from ${from}; its first rc will be ${fmtRc(major, minor, 0)}`);
   createBranch(branch, commitOf(remoteRef(from)));
-  summary(`Cut **${branch}** from \`${from}\``);
+  outcome(`Cut **${branch}** from \`${from}\``, `cut **${branch}** from \`${from}\``);
 }
 
 async function cmdCutHotfix() {
@@ -480,7 +484,7 @@ async function cmdCutHotfix() {
     return;
   }
   createBranch(branch, commitOf(prod.name));
-  summary(`Cut **${branch}** from \`${prod.name}\``);
+  outcome(`Cut **${branch}** from \`${prod.name}\``, `cut **${branch}** from \`${prod.name}\``);
 }
 
 function cmdConventions() {
@@ -579,7 +583,8 @@ async function cmdDeploy() {
   checkDeploy(name, stage === 'prod');
   log(`deploying ${name} to ${stage}: ${apps.join(' → ')}`);
   await deployTag(name, apps);
-  summary(`Deployed **${name}** to ${stage}: ${apps.map((a) => `\`${a}\``).join(', ')}`);
+  const targets = apps.map((a) => `\`${a}\``).join(', ');
+  outcome(`Deployed **${name}** to ${stage}: ${targets}`, `deploy **${name}** to ${stage}: ${targets}`);
 }
 
 function cmdStatus() {
