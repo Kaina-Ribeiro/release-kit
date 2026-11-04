@@ -114,7 +114,7 @@ node "$kit/test/cubeship-mock.mjs" "$port" "$scratch/work" &
 mock=$!
 trap 'kill $mock 2>/dev/null' EXIT
 sleep 1
-export CUBESHIP_URL="http://127.0.0.1:$port" CUBESHIP_TOKEN=test-key
+export CUBESHIP_URL="http://127.0.0.1:$port" CUBESHIP_TOKEN=test-key RELEASE_DEPLOY_POLL_MS=50
 export DEPLOY_TEST_APPS="demo/test/api demo/test/web" DEPLOY_PROD_APPS="demo/prod/api,demo/prod/web"
 tag v0.3.1-rc origin/release/v0.3
 r deploy --stage test --dry-run
@@ -134,7 +134,7 @@ r final --head release/v0.3 --dry-run
 r deploy --stage prod
 r final --head release/v0.3 --dry-run
 kill $mock 2>/dev/null
-unset CUBESHIP_URL CUBESHIP_TOKEN DEPLOY_TEST_APPS DEPLOY_PROD_APPS
+unset CUBESHIP_URL CUBESHIP_TOKEN DEPLOY_TEST_APPS DEPLOY_PROD_APPS RELEASE_DEPLOY_POLL_MS
 
 echo; echo "=== 10. final state"
 r status

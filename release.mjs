@@ -325,14 +325,28 @@ async function runs(ref, app, tag) {
   return Boolean(last && last.status === 'succeeded' && last.git_sha === commitOf(tag));
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const DEPLOY_POLL_MS = Number(process.env.RELEASE_DEPLOY_POLL_MS) || 10_000;
+const MAX_POLL_ERRORS = 6;
+
+// Short polls, not `?wait=true`: a build outlives the few minutes a proxy keeps a request open,
+// and a dropped poll is retried instead of failing a deploy that is still running.
 async function waitForDeploy(ref, id) {
   const started = Date.now();
+  let errors = 0;
   for (;;) {
-    const d = await cubeship('GET', `${appPath(ref)}/deployments/${id}?wait=true`);
-    if (d.status === 'succeeded') return d;
-    if (d.status === 'failed' || d.cancelled) fail(`deploy #${id} of ${ref} failed: ${d.error || d.status}`);
-    if (d.status === 'skipped') return d;
-    if (Date.now() - started > DEPLOY_WAIT_MS) fail(`deploy #${id} of ${ref} still ${d.status} after 45 min`);
+    let d;
+    try {
+      d = await cubeship('GET', `${appPath(ref)}/deployments/${id}`);
+      errors = 0;
+    } catch (err) {
+      if (err instanceof Failure || ++errors > MAX_POLL_ERRORS) throw err;
+      warn(`could not read deploy #${id} of ${ref} (${err.cause?.code || err.message}); retrying`);
+    }
+    if (d?.status === 'succeeded' || d?.status === 'skipped') return d;
+    if (d && (d.status === 'failed' || d.cancelled)) fail(`deploy #${id} of ${ref} failed: ${d.error || d.status}`);
+    if (Date.now() - started > DEPLOY_WAIT_MS) fail(`deploy #${id} of ${ref} still ${d?.status ?? 'unknown'} after 45 min`);
+    await sleep(DEPLOY_POLL_MS);
   }
 }
 
@@ -342,6 +356,14 @@ async function deployTag(tag, apps) {
     if (dryRun && !hasCubeship()) { act(`set ${ref} to ${tag} and deploy it`); continue; }
     const app = await getBuildingApp(ref);
     if (await runs(ref, app, tag)) { log(`✓ ${ref} already runs ${tag}`); continue; }
+    // A re-run after a dropped wait: that deploy of this tag is still going, so wait for it.
+    const last = app.ref === tag ? await lastDeployment(ref) : null;
+    if (!dryRun && last?.status === 'pending' && last.git_sha === commitOf(tag)) {
+      log(`${ref} is already deploying ${tag} (deploy #${last.id}); waiting for it`);
+      const done = await waitForDeploy(ref, last.id);
+      log(`✓ ${ref} runs ${tag} (deploy #${done.id})`);
+      continue;
+    }
     act(`set ${ref} to ${tag} (was ${app.ref}) and deploy it`);
     if (dryRun) continue;
     // The source and its settings travel together, so the source, repo and recipe go with the ref.

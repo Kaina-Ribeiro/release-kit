@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // A tiny stand-in for the Cubeship API, for test/fixtures.sh. Usage: cubeship-mock.mjs <port> <git-dir>
 // Apps build from Git; a deploy "builds" the app's ref by resolving it in <git-dir> and succeeds.
-// Like Cubeship, PATCH refuses a ref without the source and repo it goes with.
+// Like Cubeship, PATCH refuses a ref without the source and repo it goes with. A deploy stays
+// pending for its first two reads, and a long-poll (?wait=true) on a pending deploy is dropped,
+// like the real connection that a proxy cuts after a few minutes.
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
 
@@ -36,7 +38,7 @@ createServer((req, res) => {
       return send(200, { name: m[3], ...app });
     }
     if (m[4] === '/deploy' && req.method === 'POST') {
-      const d = { id: nextId++, status: 'succeeded', git_branch: app.ref, git_sha: shaOf(app.ref), duration_ms: 1000, image: 'x', has_logs: false, created_at: new Date().toISOString() };
+      const d = { id: nextId++, status: 'pending', reads: 0, git_branch: app.ref, git_sha: shaOf(app.ref), duration_ms: 1000, image: 'x', has_logs: false, created_at: new Date().toISOString() };
       deploys.get(ref).unshift(d);
       console.error(`[mock] ${ref} deploy #${d.id} of ${app.ref}`);
       return send(202, d);
@@ -44,7 +46,10 @@ createServer((req, res) => {
     if (m[4] === '/deployments' && req.method === 'GET') return send(200, { items: deploys.get(ref) });
     if (m[5] && req.method === 'GET') {
       const d = deploys.get(ref).find((x) => x.id === Number(m[5]));
-      return d ? send(200, d) : send(404, { error: 'no deploy' });
+      if (!d) return send(404, { error: 'no deploy' });
+      if (d.status === 'pending' && url.searchParams.get('wait') === 'true') return req.socket.destroy();
+      if (d.status === 'pending' && ++d.reads >= 2) d.status = 'succeeded';
+      return send(200, d);
     }
     return send(405, { error: 'method' });
   });
