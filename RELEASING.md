@@ -28,7 +28,8 @@ How code moves from a pull request to production in this repository. The automat
 ## Procedures
 
 1. **Feature or fix**: find the open release it ships in (a `release/vX.Y` not yet shipped;
-   ask if more than one fits). Branch from it, PR into it, **squash** merge.
+   ask if more than one fits). Branch from it, PR into it, **squash** merge. The automation
+   deletes your branch after the merge.
    The push tags the next `vX.Y.Z-rc`, deploys it to the test stage (if configured) and opens a
    sync PR into the next open release, if any.
 2. **Remove a feature from a release**: GitHub "Revert" on its PR, into that release.

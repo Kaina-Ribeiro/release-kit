@@ -11,6 +11,8 @@
 //   cut-release  create the next release/vX.Y from the newest open release (or the default branch)
 //   cut-hotfix   create hotfix/vX.Y from the final tag in prod
 //   conventions  check a PR's branch name, title and target (used by the PR checks workflow)
+//   cleanup      delete a feature/fix branch once its PR is merged into a version line
+//                (version lines and the default branch are never deleted here)
 //   deploy-check gate a deploy: any release tag for test stages; --prod only for the last rc of an
 //                open line, or a final whose code equals its rc (rollback)
 //   deploy       deploy a release tag to the test or prod apps on Cubeship (passes deploy-check first)
@@ -63,6 +65,8 @@ const warn = (msg) => log(inActions ? `::warning::${msg}` : `warning: ${msg}`);
 function summary(md) {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${md}\n`);
 }
+// The job summary of a change: what was done, or under --dry-run what would have been.
+const outcome = (done, would) => summary(dryRun ? `**Dry run, nothing changed.** Would ${would}` : done);
 
 // ---------- git ----------
 
@@ -78,6 +82,8 @@ const branchExists = (branch) => gitOk('rev-parse', '--verify', '--quiet', remot
 const commitOf = (ref) => git('rev-parse', `${ref}^{commit}`);
 const treeOf = (ref) => git('rev-parse', `${ref}^{tree}`);
 const isAncestor = (a, b) => gitOk('merge-base', '--is-ancestor', a, b);
+// Asks the remote itself, so it holds in shallow checkouts that never fetched that branch.
+const remoteHasBranch = (branch) => git('ls-remote', '--heads', 'origin', `refs/heads/${branch}`) !== '';
 
 let defaultBranchCache;
 function defaultBranch() {
@@ -219,7 +225,7 @@ function createBranch(name, sha) {
 // A shipped line takes no more rcs and hotfixes branch from the final tag, so its branch goes.
 // Never fatal: the final tag is already out, and a leftover branch only needs a manual delete.
 function deleteBranch(name) {
-  if (!branchExists(name)) return;
+  if (!remoteHasBranch(name)) return;
   act(`delete branch ${name}`);
   if (dryRun) return;
   try { git('push', 'origin', '--delete', name); } catch (err) {
@@ -366,7 +372,8 @@ async function cmdRc() {
   log(`${branch} → ${tag} (${last ? `last rc ${last.name}` : 'first rc'})`);
   createTag(tag, sha, `Release candidate ${tag} from ${branch}`);
   await createRelease(tag, sha, previous, true);
-  summary(`Release candidate **${tag}** from \`${branch}\` (${sha.slice(0, 12)})`);
+  outcome(`Release candidate **${tag}** from \`${branch}\` (${sha.slice(0, 12)})`,
+    `tag **${tag}** on \`${branch}\` (${sha.slice(0, 12)})`);
 }
 
 async function cmdSync() {
@@ -416,7 +423,8 @@ async function cmdFinal() {
   createTag(tag, sha, `Release ${tag} (from ${head}, same code as ${lastRc.name})`);
   await createRelease(tag, sha, previous, false);
   deleteBranch(head);
-  summary(`Shipped **${tag}** from \`${head}\` (same code as ${lastRc.name})`);
+  outcome(`Shipped **${tag}** from \`${head}\` (same code as ${lastRc.name})`,
+    `ship **${tag}** from \`${head}\` (same code as ${lastRc.name})`);
 }
 
 // The final only records what prod already runs: the line's last rc, deployed before the merge.
@@ -463,7 +471,7 @@ async function cmdCutRelease() {
   log(`open releases: ${open.map((r) => r.name).join(', ') || 'none'}; latest shipped: ${shipped?.name ?? 'none'}`);
   log(`${branch} branches from ${from}; its first rc will be ${fmtRc(major, minor, 0)}`);
   createBranch(branch, commitOf(remoteRef(from)));
-  summary(`Cut **${branch}** from \`${from}\``);
+  outcome(`Cut **${branch}** from \`${from}\``, `cut **${branch}** from \`${from}\``);
 }
 
 async function cmdCutHotfix() {
@@ -480,7 +488,7 @@ async function cmdCutHotfix() {
     return;
   }
   createBranch(branch, commitOf(prod.name));
-  summary(`Cut **${branch}** from \`${prod.name}\``);
+  outcome(`Cut **${branch}** from \`${prod.name}\``, `cut **${branch}** from \`${prod.name}\``);
 }
 
 function cmdConventions() {
@@ -554,6 +562,19 @@ function checkDeploy(name, prod) {
   return tag;
 }
 
+// A feature/fix branch is done once squashed into a version line. Version lines stay (a sync PR
+// has one as head) and only `final` deletes them, after their tag; the default branch always stays.
+function cmdCleanup() {
+  const head = opts.head ?? process.env.HEAD_REF ?? '';
+  const base = opts.base ?? process.env.BASE_REF ?? '';
+  if (!head) fail('cleanup needs --head <merged branch> and --base <its target>');
+  if (!parseLine(base)) { log(`✓ ${base || '(no base)'} is not a version line; nothing to clean`); return; }
+  if (parseLine(head) || head === defaultBranch()) { log(`✓ ${head} is a version line or the default branch; kept`); return; }
+  if (!remoteHasBranch(head)) { log(`✓ ${head} is already gone`); return; }
+  deleteBranch(head);
+  outcome(`Deleted \`${head}\` (merged into \`${base}\`)`, `delete \`${head}\` (merged into \`${base}\`)`);
+}
+
 function cmdDeployCheck() {
   const name = opts._[0] || process.env.DEPLOY_TAG;
   if (!name) fail('deploy-check needs a tag: deploy-check vX.Y.Z[-rc] [--prod]');
@@ -579,7 +600,8 @@ async function cmdDeploy() {
   checkDeploy(name, stage === 'prod');
   log(`deploying ${name} to ${stage}: ${apps.join(' → ')}`);
   await deployTag(name, apps);
-  summary(`Deployed **${name}** to ${stage}: ${apps.map((a) => `\`${a}\``).join(', ')}`);
+  const targets = apps.map((a) => `\`${a}\``).join(', ');
+  outcome(`Deployed **${name}** to ${stage}: ${targets}`, `deploy **${name}** to ${stage}: ${targets}`);
 }
 
 function cmdStatus() {
@@ -605,7 +627,8 @@ function cmdStatus() {
 
 const COMMANDS = {
   rc: cmdRc, sync: cmdSync, final: cmdFinal, 'cut-release': cmdCutRelease, 'cut-hotfix': cmdCutHotfix,
-  conventions: cmdConventions, 'deploy-check': cmdDeployCheck, deploy: cmdDeploy, status: cmdStatus,
+  conventions: cmdConventions, cleanup: cmdCleanup, 'deploy-check': cmdDeployCheck, deploy: cmdDeploy,
+  status: cmdStatus,
 };
 
 try {
