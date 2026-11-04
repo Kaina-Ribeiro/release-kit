@@ -43,7 +43,8 @@ createServer((req, res) => {
       console.error(`[mock] ${ref} deploy #${d.id} of ${app.ref}`);
       return send(202, d);
     }
-    if (m[4] === '/deployments' && req.method === 'GET') return send(200, { items: deploys.get(ref) });
+    // The real API answers a bare array, newest first (the MCP tools wrap it in { items }).
+    if (m[4] === '/deployments' && req.method === 'GET') return send(200, deploys.get(ref));
     if (m[5] && req.method === 'GET') {
       const d = deploys.get(ref).find((x) => x.id === Number(m[5]));
       if (!d) return send(404, { error: 'no deploy' });
