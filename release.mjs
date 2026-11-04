@@ -6,16 +6,20 @@
 //                every new candidate takes the next patch (v0.2.0-rc, v0.2.1-rc, …)
 //   sync         open "chore(sync): merge A into B" into the next open release line
 //   final        tag the line's last rc as final (v0.2.1-rc → v0.2.1) on the merge of a version line
-//                into the default branch, plus a release
+//                into the default branch, plus a release; refuses when prod does not run that rc
+//                (if DEPLOY_PROD_APPS is set); then deletes the shipped line's branch
 //   cut-release  create the next release/vX.Y from the newest open release (or the default branch)
 //   cut-hotfix   create hotfix/vX.Y from the final tag in prod
 //   conventions  check a PR's branch name, title and target (used by the PR checks workflow)
-//   deploy-check gate a deploy: any release tag for test stages, --prod only for a final == its last rc
+//   deploy-check gate a deploy: any release tag for test stages; --prod only for the last rc of an
+//                open line, or a final whose code equals its rc (rollback)
+//   deploy       deploy a release tag to the test or prod apps on Cubeship (passes deploy-check first)
 //   status       print the release state of the repo (read-only)
 //
 // Flags: --dry-run (print, change nothing), --no-fetch, --branch, --sha, --head, --version,
-//        --title, --base, --prod. Env: DEFAULT_BRANCH, GITHUB_REPOSITORY, GH_TOKEN/GITHUB_TOKEN,
-//        TICKET_PATTERN, PR_TITLE, HEAD_REF, BASE_REF, HEAD_SHA.
+//        --title, --base, --prod, --stage, --apps. Env: DEFAULT_BRANCH, GITHUB_REPOSITORY,
+//        GH_TOKEN/GITHUB_TOKEN, TICKET_PATTERN, PR_TITLE, HEAD_REF, BASE_REF, HEAD_SHA,
+//        CUBESHIP_URL, CUBESHIP_TOKEN, DEPLOY_TEST_APPS, DEPLOY_PROD_APPS.
 
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -212,6 +216,17 @@ function createBranch(name, sha) {
   git('push', 'origin', `${sha}:refs/heads/${name}`);
 }
 
+// A shipped line takes no more rcs and hotfixes branch from the final tag, so its branch goes.
+// Never fatal: the final tag is already out, and a leftover branch only needs a manual delete.
+function deleteBranch(name) {
+  if (!branchExists(name)) return;
+  act(`delete branch ${name}`);
+  if (dryRun) return;
+  try { git('push', 'origin', '--delete', name); } catch (err) {
+    warn(`could not delete ${name} (${err.stderr?.toString().trim() || err.message}); delete it by hand`);
+  }
+}
+
 async function createRelease(tag, sha, previous, prerelease) {
   act(`create GitHub ${prerelease ? 'prerelease' : 'release'} ${tag}`
     + `${previous ? ` with notes since ${previous}` : ''}`);
@@ -246,6 +261,91 @@ async function openSyncPr(source, target) {
     ].join('\n'),
   });
   log(`✓ opened #${pr.number}`);
+}
+
+// ---------- Cubeship (deploys) ----------
+
+// Apps that build from Git, whose `ref` can point at a tag.
+const BUILDING_SOURCES = new Set(['dockerfile', 'railpack']);
+const DEPLOY_WAIT_MS = 45 * 60 * 1000;
+
+function stageApps(stage) {
+  const raw = opts.apps ?? process.env[stage === 'prod' ? 'DEPLOY_PROD_APPS' : 'DEPLOY_TEST_APPS'] ?? '';
+  return raw.split(/[\s,]+/).filter(Boolean);
+}
+const hasCubeship = () => Boolean(process.env.CUBESHIP_URL && process.env.CUBESHIP_TOKEN);
+
+async function cubeship(method, path, body) {
+  const base = (process.env.CUBESHIP_URL || '').replace(/\/+$/, '');
+  if (!base) fail('set CUBESHIP_URL to the Cubeship API, e.g. https://cubeship.example.com/api');
+  if (!process.env.CUBESHIP_TOKEN) fail('set the CUBESHIP_TOKEN secret (a Cubeship API key)');
+  const res = await fetch(`${base}${path}`, {
+    method,
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${process.env.CUBESHIP_TOKEN}`,
+      ...(body ? { 'content-type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  if (!res.ok) fail(`Cubeship ${method} ${path}: ${res.status} ${text.slice(0, 300)}`);
+  return text ? JSON.parse(text) : null;
+}
+
+function appPath(ref) {
+  const parts = ref.split('/');
+  if (parts.length !== 3 || parts.some((p) => !p)) fail(`"${ref}" must be project/environment/app`);
+  return `/apps/${parts.map(encodeURIComponent).join('/')}`;
+}
+
+async function getBuildingApp(ref) {
+  const app = await cubeship('GET', appPath(ref));
+  if (!BUILDING_SOURCES.has(app.source)) {
+    fail(`${ref} uses source "${app.source}"; deploys by tag need an app that builds from Git (dockerfile or railpack)`);
+  }
+  return app;
+}
+
+async function lastDeployment(ref) {
+  const res = await cubeship('GET', `${appPath(ref)}/deployments`);
+  return (res?.items ?? [])[0] ?? null;
+}
+
+// True when the app is set to `tag` and its latest deploy built that commit successfully.
+async function runs(ref, app, tag) {
+  if (app.ref !== tag) return false;
+  const last = await lastDeployment(ref);
+  return Boolean(last && last.status === 'succeeded' && last.git_sha === commitOf(tag));
+}
+
+async function waitForDeploy(ref, id) {
+  const started = Date.now();
+  for (;;) {
+    const d = await cubeship('GET', `${appPath(ref)}/deployments/${id}?wait=true`);
+    if (d.status === 'succeeded') return d;
+    if (d.status === 'failed' || d.cancelled) fail(`deploy #${id} of ${ref} failed: ${d.error || d.status}`);
+    if (d.status === 'skipped') return d;
+    if (Date.now() - started > DEPLOY_WAIT_MS) fail(`deploy #${id} of ${ref} still ${d.status} after 45 min`);
+  }
+}
+
+// Points each app at the tag and deploys it, in the listed order (e.g. api before web).
+async function deployTag(tag, apps) {
+  for (const ref of apps) {
+    if (dryRun && !hasCubeship()) { act(`set ${ref} to ${tag} and deploy it`); continue; }
+    const app = await getBuildingApp(ref);
+    if (await runs(ref, app, tag)) { log(`✓ ${ref} already runs ${tag}`); continue; }
+    act(`set ${ref} to ${tag} (was ${app.ref}) and deploy it`);
+    if (dryRun) continue;
+    // The source and its settings travel together, so the source, repo and recipe go with the ref.
+    await cubeship('PATCH', appPath(ref), {
+      source: app.source, repo: app.repo, ref: tag, ...(app.dockerfile ? { dockerfile: app.dockerfile } : {}),
+    });
+    const started = await cubeship('POST', `${appPath(ref)}/deploy`, {});
+    const done = await waitForDeploy(ref, started.id);
+    log(`✓ ${ref} runs ${tag} (deploy #${done.id}, ${Math.round((done.duration_ms ?? 0) / 1000)}s)`);
+  }
 }
 
 // ---------- commands ----------
@@ -293,7 +393,9 @@ async function cmdFinal() {
   if (!line) fail(`"${head}" is not a version line (release/vX.Y or hotfix/vX.Y)`);
   const shipped = finalsOf(line.major, line.minor).at(-1);
   if (shipped && commitOf(shipped.name) === sha) {
-    log(`✓ ${shipped.name} already on ${sha.slice(0, 12)}; nothing to do`); return;
+    log(`✓ ${shipped.name} already on ${sha.slice(0, 12)}`);
+    deleteBranch(head);
+    return;
   }
   checkLine(head);
   const lastRc = pendingRcs(line.major, line.minor).at(-1);
@@ -302,15 +404,37 @@ async function cmdFinal() {
   if (gitOk('rev-parse', '--verify', '--quiet', `refs/tags/${tag}`)) {
     fail(`${tag} already exists on another commit (${commitOf(tag).slice(0, 12)})`);
   }
+  const prodApps = stageApps('prod');
   if (treeOf(lastRc.name) !== treeOf(sha)) {
     fail(`the code merged into ${def} differs from ${lastRc.name}; not tagging ${tag}. `
-      + `Fix: merge ${def} into ${head} with a PR (new rc), then PR ${head} into ${def} again.`);
+      + `Fix: merge ${def} into ${head} with a PR (new rc)`
+      + `${prodApps.length ? ', deploy that rc to prod' : ''}, then PR ${head} into ${def} again.`);
   }
+  if (prodApps.length) await checkProdRuns(lastRc.name, prodApps, tag);
   const previous = finals().filter((f) => cmpTag(f, parseTag(tag)) < 0).at(-1)?.name;
   log(`${head} merged into ${def} → ${tag} (same code as ${lastRc.name})`);
   createTag(tag, sha, `Release ${tag} (from ${head}, same code as ${lastRc.name})`);
   await createRelease(tag, sha, previous, false);
+  deleteBranch(head);
   summary(`Shipped **${tag}** from \`${head}\` (same code as ${lastRc.name})`);
+}
+
+// The final only records what prod already runs: the line's last rc, deployed before the merge.
+async function checkProdRuns(rc, apps, tag) {
+  if (!hasCubeship()) {
+    if (dryRun) { log(`  (no Cubeship credentials: skipping the check that prod runs ${rc})`); return; }
+    fail(`DEPLOY_PROD_APPS is set but CUBESHIP_URL or CUBESHIP_TOKEN is missing; cannot check that prod runs ${rc}`);
+  }
+  const behind = [];
+  for (const ref of apps) {
+    const app = await getBuildingApp(ref);
+    if (!(await runs(ref, app, rc))) behind.push(`${ref} (${app.ref})`);
+  }
+  if (behind.length) {
+    fail(`prod does not run ${rc}: ${behind.join(', ')}; not tagging ${tag}. `
+      + `Fix: Actions → Release → deploy, stage prod, tag ${rc}; then re-run this job.`);
+  }
+  log(`✓ prod runs ${rc}: ${apps.join(', ')}`);
 }
 
 async function cmdCutRelease() {
@@ -407,21 +531,55 @@ function cmdConventions() {
   }
 }
 
-function cmdDeployCheck() {
-  const name = opts._[0] || process.env.DEPLOY_TAG;
-  if (!name) fail('deploy-check needs a tag: deploy-check vX.Y.Z[-rc] [--prod]');
+// Test stages take any release tag. Prod takes the last rc of an open line (release day: what was
+// tested goes to prod, then the merge tags it final), or a final whose code equals its rc (rollback).
+function checkDeploy(name, prod) {
   const tag = parseTag(name);
   if (!tag) fail(`"${name}" is not a release tag (vX.Y.Z or vX.Y.Z-rc); branches and other refs never deploy`);
   if (!gitOk('rev-parse', '--verify', '--quiet', `refs/tags/${name}`)) fail(`tag ${name} does not exist`);
-  if (opts.prod) {
-    if (tag.rc !== null) fail(`${name} is a release candidate; prod takes only a final vX.Y.Z`);
-    const lastRc = rcsOf(tag.major, tag.minor, tag.patch).at(-1);
-    if (!lastRc) fail(`${name} has no ${name}-rc: its code was never tested as a release candidate`);
-    if (treeOf(lastRc.name) !== treeOf(name)) fail(`${name} differs from its last rc ${lastRc.name}`);
-    log(`✓ ${name} can go to prod (same code as ${lastRc.name})`);
-  } else {
-    log(`✓ ${name} can go to a test stage`);
+  if (!prod) { log(`✓ ${name} can go to a test stage`); return tag; }
+  if (tag.rc !== null) {
+    const last = pendingRcs(tag.major, tag.minor).at(-1);
+    if (last?.name !== name) {
+      fail(`${name} is not the last rc of an open v${tag.major}.${tag.minor} line`
+        + `${last ? ` (that is ${last.name})` : ''}; prod takes only the line's last rc or a final`);
+    }
+    log(`✓ ${name} can go to prod (last rc of v${tag.major}.${tag.minor}; the merge will tag it ${fmt(tag.major, tag.minor, tag.patch)})`);
+    return tag;
   }
+  const lastRc = rcsOf(tag.major, tag.minor, tag.patch).at(-1);
+  if (!lastRc) fail(`${name} has no ${name}-rc: its code was never tested as a release candidate`);
+  if (treeOf(lastRc.name) !== treeOf(name)) fail(`${name} differs from its last rc ${lastRc.name}`);
+  log(`✓ ${name} can go to prod (same code as ${lastRc.name})`);
+  return tag;
+}
+
+function cmdDeployCheck() {
+  const name = opts._[0] || process.env.DEPLOY_TAG;
+  if (!name) fail('deploy-check needs a tag: deploy-check vX.Y.Z[-rc] [--prod]');
+  checkDeploy(name, Boolean(opts.prod));
+}
+
+// Without a tag: the last rc of --branch, else of the newest open release line.
+function defaultDeployTag() {
+  const line = opts.branch ? parseLine(opts.branch) : openReleases().at(-1);
+  if (!line) fail(opts.branch ? `"${opts.branch}" is not a version line` : 'no open release line; pass the tag to deploy');
+  const last = pendingRcs(line.major, line.minor).at(-1);
+  if (!last) fail(`${line.name} has no rc to deploy`);
+  return last.name;
+}
+
+async function cmdDeploy() {
+  const stage = opts.stage || 'test';
+  if (stage !== 'test' && stage !== 'prod') fail(`--stage must be test or prod, got "${stage}"`);
+  const apps = stageApps(stage);
+  const varName = stage === 'prod' ? 'DEPLOY_PROD_APPS' : 'DEPLOY_TEST_APPS';
+  if (!apps.length) { log(`✓ no ${stage} apps (${varName} is empty); nothing to deploy`); return; }
+  const name = opts._[0] || opts.tag || defaultDeployTag();
+  checkDeploy(name, stage === 'prod');
+  log(`deploying ${name} to ${stage}: ${apps.join(' → ')}`);
+  await deployTag(name, apps);
+  summary(`Deployed **${name}** to ${stage}: ${apps.map((a) => `\`${a}\``).join(', ')}`);
 }
 
 function cmdStatus() {
@@ -447,7 +605,7 @@ function cmdStatus() {
 
 const COMMANDS = {
   rc: cmdRc, sync: cmdSync, final: cmdFinal, 'cut-release': cmdCutRelease, 'cut-hotfix': cmdCutHotfix,
-  conventions: cmdConventions, 'deploy-check': cmdDeployCheck, status: cmdStatus,
+  conventions: cmdConventions, 'deploy-check': cmdDeployCheck, deploy: cmdDeploy, status: cmdStatus,
 };
 
 try {
