@@ -2,9 +2,11 @@
 // Release automation for the version-line flow described in RELEASING.md.
 // Zero dependencies, Node 18+. Installed into a repo as .github/scripts/release.mjs.
 //
-//   rc           tag vX.Y.Z-rc.N on a push to release/vX.Y or hotfix/vX.Y, plus a prerelease
+//   rc           tag vX.Y.Z-rc on a push to release/vX.Y or hotfix/vX.Y, plus a prerelease;
+//                every new candidate takes the next patch (v0.2.0-rc, v0.2.1-rc, …)
 //   sync         open "chore(sync): merge A into B" into the next open release line
-//   final        tag vX.Y.Z on the merge of a version line into the default branch, plus a release
+//   final        tag the line's last rc as final (v0.2.1-rc → v0.2.1) on the merge of a version line
+//                into the default branch, plus a release
 //   cut-release  create the next release/vX.Y from the newest open release (or the default branch)
 //   cut-hotfix   create hotfix/vX.Y from the final tag in prod
 //   conventions  check a PR's branch name, title and target (used by the PR checks workflow)
@@ -20,7 +22,8 @@ import { appendFileSync } from 'node:fs';
 
 const TYPES = ['feat', 'fix', 'chore', 'refactor', 'perf', 'docs', 'test', 'ci', 'build', 'revert'];
 const LINE_RE = /^(release|hotfix)\/v(\d+)\.(\d+)$/;
-const TAG_RE = /^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$/;
+// vX.Y.Z-rc is a candidate; vX.Y.Z-rc.N is the legacy candidate format, still read but never written.
+const TAG_RE = /^v(\d+)\.(\d+)\.(\d+)(-rc(?:\.(\d+))?)?$/;
 const BOT_NAME = 'github-actions[bot]';
 const BOOLEAN_FLAGS = new Set(['dry-run', 'no-fetch', 'prod']);
 
@@ -98,7 +101,8 @@ function defaultBranch() {
 function parseTag(name) {
   const m = TAG_RE.exec(name);
   if (!m) return null;
-  return { name, major: +m[1], minor: +m[2], patch: +m[3], rc: m[4] === undefined ? null : +m[4] };
+  // rc: null for a final, 0 for vX.Y.Z-rc, N for the legacy vX.Y.Z-rc.N.
+  return { name, major: +m[1], minor: +m[2], patch: +m[3], rc: m[4] === undefined ? null : +(m[5] ?? 0) };
 }
 function parseLine(name) {
   const m = LINE_RE.exec(name ?? '');
@@ -109,7 +113,8 @@ function cmpTag(a, b) {
     || (a.rc ?? Number.MAX_SAFE_INTEGER) - (b.rc ?? Number.MAX_SAFE_INTEGER);
 }
 const cmpLine = (a, b) => a.major - b.major || a.minor - b.minor;
-const fmt = (major, minor, patch, rc) => `v${major}.${minor}.${patch}${rc == null ? '' : `-rc.${rc}`}`;
+const fmt = (major, minor, patch) => `v${major}.${minor}.${patch}`;
+const fmtRc = (major, minor, patch) => `${fmt(major, minor, patch)}-rc`;
 
 let stateCache;
 function state() {
@@ -127,14 +132,21 @@ const rcsOf = (major, minor, patch) =>
 const finals = () => state().tags.filter((t) => t.rc === null);
 const openReleases = () => state().branches.filter((b) => b.kind === 'release' && finalsOf(b.major, b.minor).length === 0);
 
-// Patch is 0 until the X.Y line ships, then last shipped patch + 1.
-function nextPatch(major, minor) {
-  const shipped = finalsOf(major, minor);
-  return shipped.length ? shipped.at(-1).patch + 1 : 0;
+// Candidates of an X.Y line since its last final: the current release or hotfix in progress.
+function pendingRcs(major, minor) {
+  const shipped = finalsOf(major, minor).at(-1);
+  return state().tags.filter((t) => t.rc !== null && t.major === major && t.minor === minor
+    && (!shipped || t.patch > shipped.patch));
 }
 
-// The version a version line is working towards. Refuses lines that cannot take changes.
-function lineTarget(branch) {
+// Each candidate takes a new patch: after the line's last rc, else after its last final, else 0.
+function nextPatch(major, minor) {
+  const last = pendingRcs(major, minor).at(-1) ?? finalsOf(major, minor).at(-1);
+  return last ? last.patch + 1 : 0;
+}
+
+// Refuses version lines that cannot take changes.
+function checkLine(branch) {
   const line = parseLine(branch);
   if (!line) fail(`"${branch}" is not a version line (release/vX.Y or hotfix/vX.Y)`);
   const shipped = finalsOf(line.major, line.minor);
@@ -144,7 +156,7 @@ function lineTarget(branch) {
   if (line.kind === 'hotfix' && !shipped.length) {
     fail(`${branch} has nothing in prod to fix: no final v${line.major}.${line.minor}.* tag`);
   }
-  return { ...line, patch: nextPatch(line.major, line.minor) };
+  return line;
 }
 
 // Highest final tag contained in the default branch: what is in prod.
@@ -243,16 +255,15 @@ const shaOf = (branch) => opts.sha || process.env.GITHUB_SHA || commitOf(branchE
 
 async function cmdRc() {
   const branch = currentBranch();
-  const t = lineTarget(branch);
+  const line = checkLine(branch);
   const sha = shaOf(branch);
-  const rcs = rcsOf(t.major, t.minor, t.patch);
+  const rcs = pendingRcs(line.major, line.minor);
   const already = rcs.find((r) => commitOf(r.name) === sha);
   if (already) { log(`✓ ${sha.slice(0, 12)} is already ${already.name}; nothing to do`); return; }
   const last = rcs.at(-1);
-  const tag = fmt(t.major, t.minor, t.patch, last ? last.rc + 1 : 1);
-  const target = parseTag(fmt(t.major, t.minor, t.patch));
-  const previous = last?.name ?? finals().filter((f) => cmpTag(f, target) < 0).at(-1)?.name;
-  log(`${branch} → ${fmt(t.major, t.minor, t.patch)} (${last ? `last rc ${last.name}` : 'first rc'})`);
+  const tag = fmtRc(line.major, line.minor, nextPatch(line.major, line.minor));
+  const previous = last?.name ?? finals().filter((f) => cmpTag(f, parseTag(tag)) < 0).at(-1)?.name;
+  log(`${branch} → ${tag} (${last ? `last rc ${last.name}` : 'first rc'})`);
   createTag(tag, sha, `Release candidate ${tag} from ${branch}`);
   await createRelease(tag, sha, previous, true);
   summary(`Release candidate **${tag}** from \`${branch}\` (${sha.slice(0, 12)})`);
@@ -277,15 +288,20 @@ async function cmdFinal() {
   if (!head) fail('final needs --head <release/vX.Y|hotfix/vX.Y> (the merged PR branch)');
   const def = defaultBranch();
   const sha = opts.sha || process.env.MERGE_SHA || commitOf(remoteRef(def));
-  const t = lineTarget(head);
-  const tag = fmt(t.major, t.minor, t.patch);
   if (!isAncestor(sha, remoteRef(def))) fail(`${sha.slice(0, 12)} is not on ${def}`);
+  const line = parseLine(head);
+  if (!line) fail(`"${head}" is not a version line (release/vX.Y or hotfix/vX.Y)`);
+  const shipped = finalsOf(line.major, line.minor).at(-1);
+  if (shipped && commitOf(shipped.name) === sha) {
+    log(`✓ ${shipped.name} already on ${sha.slice(0, 12)}; nothing to do`); return;
+  }
+  checkLine(head);
+  const lastRc = pendingRcs(line.major, line.minor).at(-1);
+  if (!lastRc) fail(`${head} has no rc since ${shipped?.name ?? 'it was cut'}: it was never tested as a release candidate; not tagging a final`);
+  const tag = fmt(lastRc.major, lastRc.minor, lastRc.patch);
   if (gitOk('rev-parse', '--verify', '--quiet', `refs/tags/${tag}`)) {
-    if (commitOf(tag) === sha) { log(`✓ ${tag} already on ${sha.slice(0, 12)}; nothing to do`); return; }
     fail(`${tag} already exists on another commit (${commitOf(tag).slice(0, 12)})`);
   }
-  const lastRc = rcsOf(t.major, t.minor, t.patch).at(-1);
-  if (!lastRc) fail(`no ${tag}-rc.N exists: ${head} was never tested as a release candidate; not tagging ${tag}`);
   if (treeOf(lastRc.name) !== treeOf(sha)) {
     fail(`the code merged into ${def} differs from ${lastRc.name}; not tagging ${tag}. `
       + `Fix: merge ${def} into ${head} with a PR (new rc), then PR ${head} into ${def} again.`);
@@ -321,7 +337,7 @@ async function cmdCutRelease() {
   if (finalsOf(major, minor).length) fail(`v${major}.${minor} already shipped`);
   const from = newest ? newest.name : defaultBranch();
   log(`open releases: ${open.map((r) => r.name).join(', ') || 'none'}; latest shipped: ${shipped?.name ?? 'none'}`);
-  log(`${branch} branches from ${from}; it will ship as v${major}.${minor}.0`);
+  log(`${branch} branches from ${from}; its first rc will be ${fmtRc(major, minor, 0)}`);
   createBranch(branch, commitOf(remoteRef(from)));
   summary(`Cut **${branch}** from \`${from}\``);
 }
@@ -330,8 +346,8 @@ async function cmdCutHotfix() {
   const prod = prodTag();
   if (!prod) fail(`no final vX.Y.Z tag on ${defaultBranch()}: nothing in prod to hotfix`);
   const branch = `hotfix/v${prod.major}.${prod.minor}`;
-  const next = fmt(prod.major, prod.minor, nextPatch(prod.major, prod.minor));
-  log(`in prod: ${prod.name}; the hotfix will ship as ${next}`);
+  const next = fmtRc(prod.major, prod.minor, nextPatch(prod.major, prod.minor));
+  log(`in prod: ${prod.name}; the hotfix's next rc will be ${next}`);
   if (branchExists(branch)) {
     const tip = remoteRef(branch);
     const shippedAlready = treeOf(tip) === treeOf(prod.name) || isAncestor(tip, remoteRef(defaultBranch()));
@@ -393,14 +409,14 @@ function cmdConventions() {
 
 function cmdDeployCheck() {
   const name = opts._[0] || process.env.DEPLOY_TAG;
-  if (!name) fail('deploy-check needs a tag: deploy-check vX.Y.Z[-rc.N] [--prod]');
+  if (!name) fail('deploy-check needs a tag: deploy-check vX.Y.Z[-rc] [--prod]');
   const tag = parseTag(name);
-  if (!tag) fail(`"${name}" is not a release tag (vX.Y.Z or vX.Y.Z-rc.N); branches and other refs never deploy`);
+  if (!tag) fail(`"${name}" is not a release tag (vX.Y.Z or vX.Y.Z-rc); branches and other refs never deploy`);
   if (!gitOk('rev-parse', '--verify', '--quiet', `refs/tags/${name}`)) fail(`tag ${name} does not exist`);
   if (opts.prod) {
     if (tag.rc !== null) fail(`${name} is a release candidate; prod takes only a final vX.Y.Z`);
     const lastRc = rcsOf(tag.major, tag.minor, tag.patch).at(-1);
-    if (!lastRc) fail(`${name} has no ${name}-rc.N: its code was never tested as a release candidate`);
+    if (!lastRc) fail(`${name} has no ${name}-rc: its code was never tested as a release candidate`);
     if (treeOf(lastRc.name) !== treeOf(name)) fail(`${name} differs from its last rc ${lastRc.name}`);
     log(`✓ ${name} can go to prod (same code as ${lastRc.name})`);
   } else {
@@ -421,9 +437,8 @@ function cmdStatus() {
     const open = b.kind === 'hotfix' || !shipped.length;
     if (!open) { log(`  ${b.name}: shipped (${shipped.map((t) => t.name).join(', ')})`); continue; }
     if (b.kind === 'hotfix' && !shipped.length) { log(`  ${b.name}: ⚠ no final v${b.major}.${b.minor}.* to fix`); continue; }
-    const patch = nextPatch(b.major, b.minor);
-    const last = rcsOf(b.major, b.minor, patch).at(-1);
-    log(`  ${b.name}: open → ${fmt(b.major, b.minor, patch)}, last rc ${last?.name ?? 'none'}`);
+    const last = pendingRcs(b.major, b.minor).at(-1);
+    log(`  ${b.name}: open, last rc ${last?.name ?? 'none'}, next rc ${fmtRc(b.major, b.minor, nextPatch(b.major, b.minor))}`);
   }
   const manual = lines(git('for-each-ref', '--format=%(refname:strip=2)|%(taggername)', 'refs/tags'))
     .map((l) => l.split('|')).filter(([n, tagger]) => parseTag(n) && tagger !== BOT_NAME).map(([n]) => n);
