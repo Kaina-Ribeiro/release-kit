@@ -313,9 +313,11 @@ async function getBuildingApp(ref) {
   return app;
 }
 
+// The API answers a bare array, newest first; `{ items }` is accepted too (the MCP tools' shape).
 async function lastDeployment(ref) {
   const res = await cubeship('GET', `${appPath(ref)}/deployments`);
-  return (res?.items ?? [])[0] ?? null;
+  const list = Array.isArray(res) ? res : (res?.items ?? []);
+  return list[0] ?? null;
 }
 
 // True when the app is set to `tag` and its latest deploy built that commit successfully.
