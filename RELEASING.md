@@ -8,9 +8,10 @@ How code moves from a pull request to production in this repository. The automat
 - **Default branch** (`master` or `main`) = what is in prod. Only `release/vX.Y` and
   `hotfix/vX.Y` merge into it.
 - **Version lines**: `release/vX.Y` is the next version; `hotfix/vX.Y` fixes what is in prod.
-- **Tags** follow SemVer: `vX.Y.Z-rc.N` is a release candidate, `vX.Y.Z` is shipped.
-- **Patch number**: `.0` until the line ships, then the last shipped patch + 1
-  (`release/v0.2` ships `v0.2.0`; `hotfix/v0.2` then ships `v0.2.1`, `v0.2.2`, …).
+- **Tags** follow SemVer: `vX.Y.Z-rc` is a release candidate, `vX.Y.Z` is shipped.
+- **Patch number**: every rc takes the next patch, and the final is the last rc without `-rc`.
+  `release/v0.2` tags `v0.2.0-rc`, `v0.2.1-rc`, `v0.2.2-rc` and ships `v0.2.2`; `hotfix/v0.2`
+  then tags `v0.2.3-rc`, … Older `vX.Y.Z-rc.N` tags are still read, never created.
 - Tags, GitHub releases, new version lines and sync PRs are created **only by the automation**.
   Never create, move or delete a tag by hand.
 
@@ -28,7 +29,7 @@ How code moves from a pull request to production in this repository. The automat
 
 1. **Feature or fix**: find the open release it ships in (a `release/vX.Y` not yet shipped;
    ask if more than one fits). Branch from it, PR into it, **squash** merge.
-   The push tags `vX.Y.Z-rc.N` and opens a sync PR into the next open release, if any.
+   The push tags the next `vX.Y.Z-rc` and opens a sync PR into the next open release, if any.
 2. **Remove a feature from a release**: GitHub "Revert" on its PR, into that release.
    Reapply it in the next release by reverting the revert.
 3. **New release**: Actions → Release → Run workflow → `cut-release`. It branches from the
@@ -36,10 +37,11 @@ How code moves from a pull request to production in this repository. The automat
    by hand. `version` forces a line such as `1.0` for a major bump.
 4. **Release day**: PR `release/vX.Y` → default branch, **merge commit** (never squash or
    rebase). The release must contain the default branch first (the `conventions` check says so),
-   so prod gets exactly the code of the last rc. The merge tags `vX.Y.0` with release notes.
+   so prod gets exactly the code of the last rc. The merge tags that rc's version as final
+   (`v0.2.2-rc` → `v0.2.2`) with release notes.
 5. **Hotfix**: Actions → Release → `cut-hotfix` (branches from the final tag in prod; if the
    branch already exists it is reused). Fix PRs into `hotfix/vX.Y` (squash) → test the rc →
-   PR into the default branch (merge commit) → `vX.Y.Z`.
+   PR into the default branch (merge commit) → the last rc's `vX.Y.Z`.
 6. **Sync PRs** (`chore(sync): merge A into B`, opened automatically): review and merge with a
    **merge commit**. On conflicts, resolve on a branch cut from the target, never on the source.
 
@@ -48,9 +50,9 @@ How code moves from a pull request to production in this repository. The automat
 `node .github/scripts/release.mjs deploy-check <tag> [--prod]` exits non-zero when a deploy
 breaks the rules. Call it from any deploy tool before deploying.
 
-- Test stages: any `vX.Y.Z-rc.N` or `vX.Y.Z`, any time. Branch names never deploy.
-- Prod: only a final `vX.Y.Z`, only on release day, and only if its code equals its last
-  `vX.Y.Z-rc.N`.
+- Test stages: any `vX.Y.Z-rc` or `vX.Y.Z`, any time. Branch names never deploy.
+- Prod: only a final `vX.Y.Z`, only on release day, and only if its code equals its
+  `vX.Y.Z-rc`.
 
 ## Before acting
 
@@ -64,7 +66,7 @@ breaks the rules. Call it from any deploy tool before deploying.
 
 ## When the automation refuses
 
-- **`final` refused, "differs from vX.Y.Z-rc.N"**: the default branch had changes the release
+- **`final` refused, "differs from vX.Y.Z-rc"**: the default branch had changes the release
   did not. Nothing was tagged. Merge the default branch into the version line with a PR (new rc),
   then PR the line into the default branch again.
 - **`final` refused, "no rc"**: the line was never tagged as a candidate. Push a change to the
