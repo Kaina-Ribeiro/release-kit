@@ -44,9 +44,15 @@ echo; echo "=== 2. features land on release/v0.2"
 commit_on release/v0.2 "feat(ABC-1): first feature"
 r rc --branch release/v0.2 --dry-run
 tag v0.2.0-rc origin/release/v0.2
-r rc --branch release/v0.2 --dry-run
+GITHUB_OUTPUT="$scratch/out-rc" r rc --branch release/v0.2 --dry-run
+echo "  [output] $(cat "$scratch/out-rc")"
 r cut-release --dry-run
 branch release/v0.3 origin/release/v0.2
+
+echo; echo "=== 2b. a cut at an already-tagged commit gets no rc, and its test deploy is a no-op"
+GITHUB_OUTPUT="$scratch/out-cut" r rc --branch release/v0.3 --dry-run
+echo "  [output] $(cat "$scratch/out-cut")"
+DEPLOY_TEST_APPS=demo/test/api r deploy --stage test --branch release/v0.3
 commit_on release/v0.2 "fix(ABC-2): late fix"
 r rc --branch release/v0.2 --dry-run
 tag v0.2.1-rc origin/release/v0.2
@@ -84,6 +90,7 @@ echo; echo "=== 5. hotfix on v0.2"
 r cut-release --dry-run
 r cut-hotfix --dry-run
 branch hotfix/v0.2 v0.2.2
+r rc --branch hotfix/v0.2 --dry-run
 commit_on hotfix/v0.2 "fix(ABC-6): prod bug"
 r rc --branch hotfix/v0.2 --dry-run
 tag v0.2.3-rc origin/hotfix/v0.2

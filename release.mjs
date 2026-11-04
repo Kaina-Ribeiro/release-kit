@@ -3,6 +3,7 @@
 // Zero dependencies, Node 18+. Installed into a repo as .github/scripts/release.mjs.
 //
 //   rc           tag vX.Y.Z-rc on a push to release/vX.Y or hotfix/vX.Y, plus a prerelease;
+//                skips a commit that already has a release tag (a cut: no new code);
 //                every new candidate takes the next patch (v0.2.0-rc, v0.2.1-rc, …)
 //   sync         open "chore(sync): merge A into B" into the next open release line
 //   final        tag the line's last rc as final (v0.2.1-rc → v0.2.1) on the merge of a version line
@@ -67,6 +68,10 @@ function summary(md) {
 }
 // The job summary of a change: what was done, or under --dry-run what would have been.
 const outcome = (done, would) => summary(dryRun ? `**Dry run, nothing changed.** Would ${would}` : done);
+// A step output for later jobs (`steps.<id>.outputs.<key>`).
+function output(key, value) {
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+}
 
 // ---------- git ----------
 
@@ -383,19 +388,39 @@ async function deployTag(tag, apps) {
 const currentBranch = () => opts.branch || process.env.GITHUB_REF_NAME || git('branch', '--show-current');
 const shaOf = (branch) => opts.sha || process.env.GITHUB_SHA || commitOf(branchExists(branch) ? remoteRef(branch) : branch);
 
+// Release tags (final or rc, any line) on a commit.
+const releaseTagsOn = (sha) => state().tags.filter((t) => commitOf(t.name) === sha);
+
+// Step output `tag`: this line's rc on the pushed commit, empty when there is none, so the
+// test-stage deploy runs only for a commit that is (or already was) this line's candidate.
 async function cmdRc() {
   const branch = currentBranch();
   const line = checkLine(branch);
   const sha = shaOf(branch);
   const rcs = pendingRcs(line.major, line.minor);
   const already = rcs.find((r) => commitOf(r.name) === sha);
-  if (already) { log(`✓ ${sha.slice(0, 12)} is already ${already.name}; nothing to do`); return; }
+  if (already) {
+    log(`✓ ${sha.slice(0, 12)} is already ${already.name}; nothing to do`);
+    output('tag', already.name);
+    return;
+  }
+  // A commit that already carries a release tag has no new code: a cut (release from an open
+  // release, hotfix from the final in prod) pushes such a commit, and it must not become an rc.
+  const tagged = releaseTagsOn(sha).map((t) => t.name);
+  if (tagged.length) {
+    log(`✓ ${sha.slice(0, 12)} is already ${tagged.join(', ')}: no new code on ${branch}, no rc; `
+      + 'the first change merged into it takes one');
+    summary(`No rc for \`${branch}\`: ${sha.slice(0, 12)} is already ${tagged.map((t) => `**${t}**`).join(', ')} (no new code)`);
+    output('tag', '');
+    return;
+  }
   const last = rcs.at(-1);
   const tag = fmtRc(line.major, line.minor, nextPatch(line.major, line.minor));
   const previous = last?.name ?? finals().filter((f) => cmpTag(f, parseTag(tag)) < 0).at(-1)?.name;
   log(`${branch} → ${tag} (${last ? `last rc ${last.name}` : 'first rc'})`);
   createTag(tag, sha, `Release candidate ${tag} from ${branch}`);
   await createRelease(tag, sha, previous, true);
+  output('tag', dryRun ? '' : tag);
   outcome(`Release candidate **${tag}** from \`${branch}\` (${sha.slice(0, 12)})`,
     `tag **${tag}** on \`${branch}\` (${sha.slice(0, 12)})`);
 }
@@ -605,11 +630,13 @@ function cmdDeployCheck() {
   checkDeploy(name, Boolean(opts.prod));
 }
 
-// Without a tag: the last rc of --branch, else of the newest open release line.
-function defaultDeployTag() {
+// Without a tag: the last rc of --branch, else of the newest open release line. For a test stage, a
+// --branch with no rc yet (a fresh cut, which takes no rc until new code lands) gives null.
+function defaultDeployTag(stage) {
   const line = opts.branch ? parseLine(opts.branch) : openReleases().at(-1);
   if (!line) fail(opts.branch ? `"${opts.branch}" is not a version line` : 'no open release line; pass the tag to deploy');
   const last = pendingRcs(line.major, line.minor).at(-1);
+  if (!last && opts.branch && stage === 'test') return null;
   if (!last) fail(`${line.name} has no rc to deploy`);
   return last.name;
 }
@@ -620,7 +647,12 @@ async function cmdDeploy() {
   const apps = stageApps(stage);
   const varName = stage === 'prod' ? 'DEPLOY_PROD_APPS' : 'DEPLOY_TEST_APPS';
   if (!apps.length) { log(`✓ no ${stage} apps (${varName} is empty); nothing to deploy`); return; }
-  const name = opts._[0] || opts.tag || defaultDeployTag();
+  const name = opts._[0] || opts.tag || defaultDeployTag(stage);
+  if (!name) {
+    log(`✓ ${opts.branch} has no rc yet; nothing to deploy`);
+    summary(`Nothing deployed to ${stage}: \`${opts.branch}\` has no rc yet`);
+    return;
+  }
   checkDeploy(name, stage === 'prod');
   log(`deploying ${name} to ${stage}: ${apps.join(' → ')}`);
   await deployTag(name, apps);
