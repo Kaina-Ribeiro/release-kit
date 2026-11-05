@@ -37,6 +37,8 @@ clone_into() { # dir
   local bare="$1/remote.git"
   { [ ! -e "$bare" ] && [ ! -e "$1/work" ]; } || die "$1 already holds a fixture copy"
   git clone --quiet --bare "$src" "$bare" || die "cannot clone $src (it must be a git repository)"
+  # Only the source's history: its own tags (the kit's v1.0.0, v1) would read as releases in prod.
+  git -C "$bare" tag -l | xargs -r git -C "$bare" tag -d >/dev/null || die "cannot drop the tags of $1/remote.git"
   # git's own spelling of the path (C:/… on Windows): the URL it records for origin.
   bare=$(git -C "$bare" rev-parse --absolute-git-dir) || die "cannot read $1/remote.git"
   git clone --quiet "$bare" "$1/work" || die "cannot clone $bare"
