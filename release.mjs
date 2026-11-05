@@ -26,9 +26,15 @@
 //   deploy       deploy a release tag to the test or prod apps on Cubeship (passes deploy-check first),
 //                then fail unless each app's container comes up and stays up (see waitForHealthy)
 //   status       print the release state of the repo (read-only)
+//   report       after an automatic job (rc, deploy-test, final, cleanup): on a failure open the issue
+//                "Release automation failing: <job> on <line>" (label release-kit) or comment on it
+//                if it is already open; on a success comment "Fixed by <run>" and close it
+//
+// On any failure the error is also written, on one line, as the step output `error` (GITHUB_OUTPUT),
+// for the report job.
 //
 // Flags: --dry-run (print, change nothing), --no-fetch, --branch, --sha, --head, --version,
-//        --title, --base, --prod, --stage, --apps. Env: DEFAULT_BRANCH, GITHUB_REPOSITORY,
+//        --title, --base, --prod, --stage, --apps, --job, --line, --result, --run-url, --error. Env: DEFAULT_BRANCH, GITHUB_REPOSITORY,
 //        GH_TOKEN/GITHUB_TOKEN, TICKET_PATTERN, PR_TITLE, HEAD_REF, BASE_REF, HEAD_SHA,
 //        CUBESHIP_URL, CUBESHIP_TOKEN, DEPLOY_TEST_APPS, DEPLOY_PROD_APPS,
 //        RELEASE_HEALTH_STABLE_S, RELEASE_HEALTH_WAIT_S, GITHUB_REF_TYPE + GITHUB_REF_NAME (a
@@ -922,10 +928,85 @@ function cmdStatus() {
   if (manual.length) warn(`tags not created by the automation: ${manual.join(', ')}`);
 }
 
+// ---------- failure issues ----------
+
+const REPORT_JOBS = ['rc', 'deploy-test', 'final', 'cleanup'];
+const REPORT_LABEL = 'release-kit';
+
+// The issue body (and each later failure's comment): the run, the line, the error, where to look.
+function failureBody(job, line, runUrl, error) {
+  const text = error || '(no message from release.mjs: see the run)';
+  const longest = Math.max(2, ...(text.match(/`+/g) ?? []).map((b) => b.length));
+  const fence = '`'.repeat(longest + 1);
+  const server = process.env.GITHUB_SERVER_URL || 'https://github.com';
+  const guide = `${server}/${repoSlug()}/blob/${defaultBranch()}/RELEASING.md#when-the-automation-refuses`;
+  return [
+    `The \`${job}\` job failed on \`${line}\`: ${runUrl}`,
+    '',
+    fence, text, fence,
+    '',
+    `What to do: [RELEASING.md, "When the automation refuses"](${guide}).`,
+    `The next successful \`${job}\` on \`${line}\` closes this issue.`,
+  ].join('\n');
+}
+
+async function reportResult(job, line, result, runUrl, error) {
+  const title = `Release automation failing: ${job} on ${line}`;
+  if (dryRun && !token()) {
+    log('  (no GitHub token: skipping the check for an open issue)');
+    act(result === 'failure' ? `open issue "${title}"` : `close issue "${title}" if one is open`);
+    return;
+  }
+  const issues = await api('GET', `/issues?state=open&labels=${REPORT_LABEL}&per_page=100`);
+  const open = issues.find((i) => i.title === title && !i.pull_request) ?? null;
+  if (result === 'failure') {
+    const body = failureBody(job, line, runUrl, error);
+    if (open) {
+      act(`comment on issue #${open.number} ("${title}")`);
+      if (dryRun) return;
+      await api('POST', `/issues/${open.number}/comments`, { body });
+      log(`✓ commented on issue #${open.number}: ${title}`);
+    } else {
+      act(`open issue "${title}"`);
+      if (dryRun) return;
+      const issue = await api('POST', '/issues', { title, body, labels: [REPORT_LABEL] });
+      log(`✓ opened issue #${issue.number}: ${title}`);
+    }
+    return;
+  }
+  if (!open) { log(`✓ no open issue for ${job} on ${line}`); return; }
+  act(`close issue #${open.number} ("${title}")`);
+  if (dryRun) return;
+  await api('POST', `/issues/${open.number}/comments`, { body: `Fixed by ${runUrl}` });
+  await api('PATCH', `/issues/${open.number}`, { state: 'closed', state_reason: 'completed' });
+  log(`✓ closed issue #${open.number}: ${title}`);
+}
+
+// The job already passed or failed: reporting it never changes that, so a GitHub error is a warning.
+async function cmdReport() {
+  const { job, line, result } = opts;
+  const runUrl = opts['run-url'];
+  const error = typeof opts.error === 'string' ? opts.error : '';
+  if (!REPORT_JOBS.includes(job)) fail(`--job must be ${REPORT_JOBS.slice(0, -1).join(', ')} or ${REPORT_JOBS.at(-1)}`);
+  if (!['success', 'failure', 'skipped', 'cancelled'].includes(result)) {
+    fail('--result must be success, failure, skipped or cancelled');
+  }
+  // A skipped job may have no line (final and cleanup on a push): nothing to look up.
+  if (result === 'skipped' || result === 'cancelled') { log(`nothing to report: ${job} was ${result}`); return; }
+  if (typeof line !== 'string' || !line) fail('--line is required (the branch the job ran for)');
+  if (typeof runUrl !== 'string' || !runUrl) fail('--run-url is required');
+  try {
+    await reportResult(job, line, result, runUrl, error);
+  } catch (err) {
+    if (!(err instanceof Failure)) throw err;
+    warn(`could not report ${job} on ${line} (${result}): ${err.message}`);
+  }
+}
+
 const COMMANDS = {
   rc: cmdRc, sync: cmdSync, final: cmdFinal, 'cut-release': cmdCutRelease, 'cut-hotfix': cmdCutHotfix,
   conventions: cmdConventions, cleanup: cmdCleanup, 'deploy-check': cmdDeployCheck, deploy: cmdDeploy,
-  status: cmdStatus,
+  status: cmdStatus, report: cmdReport,
 };
 
 try {
@@ -935,5 +1016,8 @@ try {
 } catch (err) {
   const msg = err instanceof Failure ? err.message : (err.stderr?.toString().trim() || err.stack);
   console.error(inActions ? `::error::${msg}` : `error: ${msg}`);
+  // For the report job (needs.<job>.outputs.error): one line, the message without a stack.
+  const short = err instanceof Failure ? err.message : (err.stderr?.toString().trim() || err.message || String(err));
+  output('error', short.replace(/\s*\n\s*/g, ' ').trim());
   process.exitCode = 1;
 }

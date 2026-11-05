@@ -411,6 +411,61 @@ tag v0.1.2-hf "origin/$def"
 expect_out ok "in prod:        v0.1.2-hf" status
 expect_out ok "✓ v0.1.2-hf can go to prod (same code as v0.1.2-hf-rc)" deploy-check v0.1.2-hf --prod
 
+echo; echo "=== 16. failures open one issue per job and line; a recovery closes it"
+cd "$scratch/work" || die "cannot enter $scratch/work" # the main story, where release/v0.2 shipped
+GITHUB_OUTPUT="$scratch/out-err" expect fail rc --branch release/v0.2 --dry-run --no-fetch
+check "the error is a step output, on one line" grep -q '^error=release/v0.2 already shipped' "$scratch/out-err"
+mkdir "$scratch/ghmock-iss"
+node "$kit/test/github-mock.mjs" 47127 "$scratch/ghmock-iss" &
+ghmock=$!
+trap 'kill $mock $ghmock 2>/dev/null' EXIT
+sleep 1
+export GITHUB_API_URL=http://127.0.0.1:47127 GH_TOKEN=test-token
+issues="$scratch/ghmock-iss/log"
+expect_out ok 'would open issue "Release automation failing: final on release/v0.3"' \
+  report --job final --line release/v0.3 --result failure --run-url https://x/runs/0 --error "boom" --dry-run
+check "a dry run opens nothing" not grep -q '^issue' "$issues"
+expect_out ok "opened issue #1" \
+  report --job final --line release/v0.3 --result failure --run-url https://x/runs/1 --error "prod does not run v0.3.2-rc"
+check "one issue, titled by job and line, labelled release-kit" \
+  grep -qx "issue #1 \[release-kit\]: Release automation failing: final on release/v0.3" "$issues"
+check "its body has the run" grep -qF "https://x/runs/1" "$issues"
+check "its body has the error" grep -qF "prod does not run v0.3.2-rc" "$issues"
+check "its body points to RELEASING.md" grep -qF "RELEASING.md#when-the-automation-refuses" "$issues"
+expect_out ok 'would comment on issue #1' \
+  report --job final --line release/v0.3 --result failure --run-url https://x/runs/2 --error "again" --dry-run
+expect_out ok "commented on issue #1" \
+  report --job final --line release/v0.3 --result failure --run-url https://x/runs/2 --error "again"
+check "the same failure comments, it opens no second issue" not grep -q '^issue #2' "$issues"
+check "the comment has the new run" grep -qF "https://x/runs/2" "$issues"
+expect_out ok "no open issue for rc on release/v0.3" \
+  report --job rc --line release/v0.3 --result success --run-url https://x/runs/3
+expect_out ok "no open issue for final on release/v0.4" \
+  report --job final --line release/v0.4 --result success --run-url https://x/runs/3
+expect_out ok "nothing to report: final was skipped" \
+  report --job final --line release/v0.3 --result skipped --run-url https://x/runs/3
+echo "  (on a push, final and cleanup are skipped and have no line)"
+expect_out ok "nothing to report: cleanup was skipped" \
+  report --job cleanup --line "" --result skipped --run-url https://x/runs/3 --error ""
+check "a success on another job or line closes nothing" not grep -q '^closed' "$issues"
+expect_out ok 'would close issue #1' \
+  report --job final --line release/v0.3 --result success --run-url https://x/runs/4 --dry-run
+expect_out ok "closed issue #1" \
+  report --job final --line release/v0.3 --result success --run-url https://x/runs/4
+check "it says what fixed it" grep -qx "comment #1: Fixed by https://x/runs/4" "$issues"
+check "it is closed" grep -qx "closed #1" "$issues"
+expect_out ok "opened issue #2" \
+  report --job final --line release/v0.3 --result failure --run-url https://x/runs/5 --error "once more"
+kill $ghmock 2>/dev/null
+export GH_TOKEN=; unset GITHUB_API_URL
+echo "  (no token: a dry run cannot look for an open issue)"
+expect_out ok 'would open issue "Release automation failing: rc on hotfix/v0.2"' \
+  report --job rc --line hotfix/v0.2 --result failure --run-url u --dry-run
+GH_TOKEN=test-token GITHUB_API_URL=http://127.0.0.1:9 expect_out ok "warning: could not report" \
+  report --job rc --line hotfix/v0.2 --result failure --run-url u --error "boom"
+expect_out fail "--job must be rc, deploy-test, final or cleanup" \
+  report --job deploy --line release/v0.3 --result failure --run-url u
+
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
 echo "✓ all expectations met"
