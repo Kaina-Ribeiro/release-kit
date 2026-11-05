@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Release automation for the version-line flow described in RELEASING.md.
-// Zero dependencies, Node 18+. Installed into a repo as .github/scripts/release.mjs.
+// Zero dependencies, Node 18+. Repositories run it through the kit's reusable workflows (pinned at @v1).
 //
 //   rc           tag vX.Y.Z-rc on a push to release/vX.Y (vX.Y.Z-hf-rc on hotfix/vX.Y), plus a
 //                prerelease; skips a commit that already has a final or an older line's rc (a cut: no
