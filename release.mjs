@@ -325,17 +325,22 @@ async function afterShip(head, tag, sha) {
   const def = defaultBranch();
   // The state was read before the tag, so `head` may still look open.
   const next = openReleases().find((r) => r.name !== head);
-  let pr = null;
+  let pr = null; // null under --dry-run, where the PR only would be opened
   let synced = true;
+  let refused = false;
   if (next && !isAncestor(sha, remoteRef(next.name))) {
     synced = false;
     try { pr = await openSyncPr(def, next.name); } catch (err) {
+      refused = true;
       warn(`could not open the sync PR from ${def} into ${next.name} (${err.cause?.code || err.message}); open it by hand`);
     }
   }
+  // The comment stays on the closed PRs, so it never points at a sync PR that does not exist.
   const where = !next ? `its changes are in ${def}.`
     : synced ? `its changes are already in ${next.name}.`
-      : `its changes reach ${next.name} through ${pr ? `#${pr}` : 'the sync PR'}.`;
+      : refused ? `its changes are in ${def} but no sync PR into ${next.name} could be opened: `
+        + `open one (merge ${def} into ${next.name}).`
+        : `its changes reach ${next.name} through ${pr ? `#${pr}` : 'the sync PR'}.`;
   try { await commentOnOpenPrs(head, `Closed because ${head} shipped as ${tag}; ${where}`); } catch (err) {
     warn(`could not comment on the open PRs from ${head} (${err.cause?.code || err.message})`);
   }

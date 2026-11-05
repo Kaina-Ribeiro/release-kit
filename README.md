@@ -51,7 +51,8 @@ bash test/fixtures.sh <source-repo> <empty-scratch-dir>
 e.g. one that is not called `main`.
 
 Builds a throwaway copy of the source with fixture tags and runs the whole cycle in `--dry-run`,
-with `test/cubeship-mock.mjs` standing in for Cubeship. Every step asserts its outcome: `expect
+with `test/cubeship-mock.mjs` standing in for Cubeship and `test/github-mock.mjs` for the GitHub
+API (section 14b: a real `final` opens the sync PR and comments). Every step asserts its outcome: `expect
 ok|fail` checks the exit code, `expect_out ok|fail "<text>"` also requires the text in the output,
 and `check` asserts a file or git state. A step that misses prints `✗ MISS` and makes the script
 exit 1; a clean run ends with `✓ all expectations met`. Among others it covers: one rc per new

@@ -313,6 +313,37 @@ branch release/v0.2 origin/release/v0.1
 tag v0.2.0-rc origin/release/v0.2
 expect_out ok "release/v0.1 → v0.1.1-rc" rc --branch release/v0.1 --dry-run
 
+echo; echo "=== 14b. B6 for real (against test/github-mock.mjs): the sync PR, the comments, a refused PR"
+fresh b6
+mkdir "$scratch/ghmock"
+node "$kit/test/github-mock.mjs" 47125 "$scratch/ghmock" &
+ghmock=$!
+trap 'kill $mock $ghmock 2>/dev/null' EXIT
+sleep 1
+export GITHUB_API_URL=http://127.0.0.1:47125 GH_TOKEN=test-token
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): one"; tag v0.1.0-rc origin/release/v0.1
+merge_into_default release/v0.1; tag v0.1.0 "origin/$def"; git push --quiet origin --delete release/v0.1
+branch release/v0.2 "origin/$def"; commit_on release/v0.2 "feat(ABC-2): two"; tag v0.2.0-rc origin/release/v0.2
+branch hotfix/v0.1 v0.1.0; commit_on hotfix/v0.1 "fix(ABC-3): prod bug"; tag v0.1.1-rc origin/hotfix/v0.1
+echo "  (the hotfix's own sync PR, which GitHub closes once shipping deletes hotfix/v0.1)"
+expect_out ok "✓ opened #1" sync --branch hotfix/v0.1
+merge_into_default hotfix/v0.1
+echo "$def" > "$scratch/ghmock/refuse-pulls-from"
+echo "  (GitHub refuses the sync PR from $def: the final still ships, warns, and its comment says no PR exists)"
+expect_out ok "warning: could not open the sync PR from $def into release/v0.2" final --head hotfix/v0.1
+check "the final tag is out" git ls-remote --quiet --exit-code --tags origin refs/tags/v0.1.1
+check "it has a GitHub release" grep -qx "release v0.1.1" "$scratch/ghmock/log"
+check "the shipped branch is gone" not git ls-remote --quiet --exit-code --heads origin hotfix/v0.1
+check "the comment on #1 says the sync into release/v0.2 is still to do" grep -qF \
+  "comment #1: Closed because hotfix/v0.1 shipped as v0.1.1; its changes are in $def but no sync PR into release/v0.2 could be opened: open one (merge $def into release/v0.2)." "$scratch/ghmock/log"
+rm "$scratch/ghmock/refuse-pulls-from"
+echo "  (a re-run once GitHub allows it opens the sync PR and points #1 at it)"
+expect_out ok "✓ opened #2" final --head hotfix/v0.1
+check "the comment on #1 points at #2" grep -qF \
+  "comment #1: Closed because hotfix/v0.1 shipped as v0.1.1; its changes reach release/v0.2 through #2." "$scratch/ghmock/log"
+kill $ghmock 2>/dev/null
+export GH_TOKEN=; unset GITHUB_API_URL
+
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
 echo "✓ all expectations met"
