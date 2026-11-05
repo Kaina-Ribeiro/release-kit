@@ -43,7 +43,7 @@
 
 ### Task 1.1: harness que verifica + CI do kit (B8)
 
-**Status:** ⏳ pending
+**Status:** ✅ done (cde6ea8; guarda contra push em ea8ee0a)
 
 **Files:**
 - Modify: `test/fixtures.sh`
@@ -89,7 +89,7 @@
 
 ### Task 1.2: B3, fetch com tag local velha + mensagens do git
 
-**Status:** ⏳ pending
+**Status:** ✅ done (421fbce)
 
 **Files:** Modify `release.mjs` (`git` ~80, `state` ~139); Modify `test/fixtures.sh` (seção nova 11)
 
@@ -112,7 +112,7 @@ expect_out fail "git fetch origin --tags --prune --force failed: fatal:" status
 
 ### Task 1.3: B5, uma linha só faz PR para uma linha mais nova
 
-**Status:** ⏳ pending
+**Status:** ✅ done (f3f0705)
 
 **Files:** Modify `release.mjs` (`cmdConventions` ~627); `test/fixtures.sh` (seções 3 e 5); `RELEASING.md` (Naming)
 
@@ -126,7 +126,7 @@ expect_out fail "git fetch origin --tags --prune --force failed: fatal:" status
 
 ### Task 1.4: B2, prod recusa um rc sem o que o default branch tem
 
-**Status:** ⏳ pending
+**Status:** ✅ done (55ecbe5)
 
 **Files:** Modify `release.mjs` (`checkDeploy` ~668, helper novo `lineOf`); `test/fixtures.sh` (seções 7, 8 e nova 12); `RELEASING.md` (Deploys, Procedure 4)
 
@@ -160,7 +160,7 @@ expect ok deploy-check v0.1.1 --prod
 
 ### Task 1.5: B1, deploy sem tag usa o ref do run
 
-**Status:** ⏳ pending
+**Status:** ✅ done (56f63fd)
 
 **Files:** Modify `release.mjs` (`defaultDeployTag` ~708, helper novo `openLines`); `workflows/release.yml` (descrição do input `tag`); `test/fixtures.sh` (seções 8, 9 e nova 13); `RELEASING.md` (Procedures 4.2 e 5)
 
@@ -200,7 +200,7 @@ unset DEPLOY_PROD_APPS DEPLOY_TEST_APPS
 
 ### Task 1.6: B4, a corrida do cut não tira o rc da linha antiga
 
-**Status:** ⏳ pending
+**Status:** ✅ done (7e9e358)
 
 **Files:** Modify `release.mjs` (`cmdRc` ~482, `cmdCutRelease` ~572, helper novo `blockingTagsOn`); `test/fixtures.sh` (seção nova 14); `RELEASING.md` (Procedure 3)
 
@@ -229,7 +229,7 @@ expect_out ok "release/v0.1 → v0.1.1-rc" rc --branch release/v0.1 --dry-run
 
 ### Task 1.7: B6, sync do default branch antes de apagar a linha entregue
 
-**Status:** ⏳ pending
+**Status:** ✅ done (2aaeb2b; texto do comentário com o sync PR recusado em b82a802)
 
 **Files:** Modify `release.mjs` (`openSyncPr` ~255, `cmdFinal` ~517, `cmdConventions` ~627, funções novas `commentOnOpenPrs` e `afterShip`); `test/fixtures.sh` (seções 3, 4, 5); `RELEASING.md` (Procedures 4.3, 5 e 6; "When the automation refuses")
 
@@ -510,6 +510,73 @@ done
 | 5 | O nome do check do job chamador `checks` | ⏳ |
 
 ### Fase 1
+
+Branch `fix/kit-guards`, 2026-11-05. Commits: `cde6ea8` (1.1), `421fbce` (1.2, B3), `f3f0705` (1.3, B5),
+`55ecbe5` (1.4, B2), `56f63fd` (1.5, B1), `7e9e358` (1.6, B4), `2aaeb2b` (1.7, B6), `cb3a9bd` (README),
+`ea8ee0a` (guarda contra push), `b82a802` (achados do revisor). Cada bug teve o teste em RED antes da correção.
+
+Fim da saída de `bash test/fixtures.sh "" "$(mktemp -d)"`:
+
+```
+  (a re-run once GitHub allows it opens the sync PR and points #1 at it)
+
+$ release.mjs final --head hotfix/v0.1   [expect ok: "✓ opened #2"]
+✓ v0.1.1 already on 7c0b107a574c
+→ open PR "chore(sync): merge main into release/v0.2"
+✓ opened #2
+→ comment on open PRs from hotfix/v0.1: "Closed because hotfix/v0.1 shipped as v0.1.1; its changes reach release/v0.2 through #2."
+✓ commented on #1
+(exit 0)
+  [check] the comment on #1 points at #2
+
+✓ all expectations met
+(85 passos expect/expect_out + 14 check, exit 0)
+```
+
+Com o kit como fonte (`bash test/fixtures.sh . "$(mktemp -d)"`, default branch `fix/kit-guards`): exit 0, `✓ all expectations met`, 0 MISS.
+
+Surpresas e decisões:
+
+- **B2, regra literal quebrava a seção 9.** Lá o merge da release no default branch vem antes do deploy prod
+  (o conserto documentado de "final refused, prod does not run"). O commit de merge não é ancestral do rc, e
+  a regra literal recusava. Agora também passa o rc cuja árvore é igual à do default branch (prod não perde
+  nada). O `SPEC.md` (B2) diz isso.
+- **Kit como fonte achou um bug do `fresh`:** com `src=.` relativo, cada seção nova clonava o work da seção
+  anterior (o default virava `release/v0.1`). O `src` agora é absoluto.
+- **Guarda contra push** (do commit `3d6edb6`, nunca mergeado): sai com 1 se o scratch não está vazio ou se um
+  clone falha, confere que o único remoto é o bare do scratch e instala um `pre-push` que recusa outra URL.
+  No Windows o git grava o caminho como `C:/…` e o bash vê `/tmp/…`, então a guarda usa o caminho do próprio
+  git (`rev-parse --absolute-git-dir`); a comparação literal do `3d6edb6` falharia em toda execução. Seção 0
+  prova a guarda (RED antes: com uma fonte inválida, o script fez push no `origin` do checkout).
+- **Numeração:** a seção 0 (guarda) e a 14b (B6 contra `test/github-mock.mjs`, `final` real) não ocupam a 15
+  e a 16, que a Fase 2 e a Fase 4 já usam.
+- **B1:** um run a partir de uma linha sem rc falha com `<linha> has no rc to deploy` nos dois stages (só o
+  `--branch` do job `rc` mantém o no-op no test).
+- **B6:** quando a próxima release já contém o commit entregue, o comentário diz `its changes are already in
+  <release>.`; quando o sync PR não pôde ser aberto, diz para abrir um (nunca aponta para um PR que não existe).
+- O `README.md` ganhou a seção "Guards" (B1–B6), que o SPEC pede e o plano não listava.
+- `fixtures.sh` também limpa `GITHUB_OUTPUT` e `GITHUB_REF_TYPE` (o CI do kit define os dois).
+
+Revisor (subagente novo, só leitura, "skip style"): 5 achados.
+- ✅ #2 corrigido: com o sync PR recusado (ex.: o repo não deixa o Actions criar PR), o comentário apontava
+  "the sync PR" inexistente.
+- ✅ #3 corrigido: nenhum `final` real exercitava POST /pulls e os comentários; agora a seção 14b faz isso.
+- ⏳ #1 não corrigido (anterior a este branch, fora do SPEC): se o POST /releases falhar depois do push da
+  tag, o re-run cai em "already on" e nunca cria a GitHub Release. O sync e os comentários rodam no re-run.
+  A Fase 4 (issue quando falha) deve tornar isso visível; criar a release no re-run fica como ideia.
+- Menores, adiados: o `afterShip` compara a próxima release com o commit de merge, não com o topo do default
+  branch (interface do plano); o `ls-remote` do `deleteBranch` fica fora de um `try` (um re-run recupera).
+- Fora do alcance do revisor: se o `GITHUB_TOKEN` dos 3 repos consegue abrir PR e comentar, e o
+  `GITHUB_REF_TYPE=tag` num dispatch real a partir de uma tag. Conferir no primeiro uso.
+
 ### Fase 2
 ### Fase 3
+
+- O commit `4810e87` (branch `claude/fix-personal-rulesets-40ba86`, 2026-11-04, nunca mergeado) faz o
+  `install.sh` tirar o bypass actor Integration 15368 nos repos de usuário, porque o GitHub responde HTTP 422
+  ali. A Task 3.3 precisa incorporar isso quando mexer nos rulesets e no `install.sh`.
+
 ### Fase 4
+
+- `test/github-mock.mjs` já existe (Fase 1, seção 14b: pulls, comentários em PR e releases, porta 47125).
+  A Task 4.1 o estende com as rotas de issues em vez de criar outro.

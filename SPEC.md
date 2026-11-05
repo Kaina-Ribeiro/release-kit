@@ -56,7 +56,9 @@ mesma versão do kit (B7) e fazer os testes do kit verificarem de verdade (B8).
 - **Hoje:** `deploy-check --prod` aceita o último rc de uma linha aberta mesmo sem o hotfix que já foi
   para o `main`, e prod perde o hotfix.
 - **Novo:** um rc só vai para prod se contém o default branch (`main` é ancestral do rc). O rollback
-  para um final não muda. Mensagem:
+  para um final não muda. Também passa o rc cujo código é igual ao do `main` (mesma árvore): depois
+  que a linha já entrou no `main`, o commit de merge não está no rc, mas prod não perde nada. Isso
+  mantém o conserto de "final refused, prod does not run" (deploy do rc depois do merge). Mensagem:
   `v0.7.2-rc lacks what main has (main at abc123, prod v0.6.4): prod would lose it. Merge the open sync PR (or main) into release/v0.7, then deploy the new rc.`
 - **Teste:** um hotfix entregue e uma release sem o sync → `fail`. Depois do merge do `main` na release e de um rc novo → `ok`.
 
