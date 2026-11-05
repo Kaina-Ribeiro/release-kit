@@ -60,4 +60,8 @@ deploy gate, legacy `-rc.N` tags, test/prod deploys and a deploy whose container
 exits although Cubeship calls it "succeeded" (section 8b). Sections 11 and up each start from
 their own copy of the source and reproduce one bug.
 
+It never pushes outside its scratch copy: it stops (exit 1) on a scratch dir that is not empty
+or a failed clone, checks that each clone's only remote is its scratch bare repo, and installs a
+`pre-push` hook there that refuses any other URL. Section 0 proves it.
+
 `.github/workflows/test.yml` runs it on every pull request and push to `master`.

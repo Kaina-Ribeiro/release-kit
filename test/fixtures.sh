@@ -15,22 +15,39 @@ scratch=${2:?scratch dir}
 unset GITHUB_ACTIONS GITHUB_REF_NAME GITHUB_REF_TYPE GITHUB_SHA GITHUB_OUTPUT GITHUB_STEP_SUMMARY DEFAULT_BRANCH
 export GH_TOKEN= GITHUB_TOKEN= GITHUB_REPOSITORY=example/fixture
 
-mkdir -p "$scratch"
+# Guard: everything below pushes to "origin", so it must only ever run inside a scratch clone whose
+# origin is a scratch bare repo. Without -e, a failed clone or cd would leave the script in the
+# caller's directory, and its fixture branches and tags would go to that checkout's real remote.
+die() { echo "fixtures: $*" >&2; exit 1; }
+mkdir -p "$scratch" || die "cannot create $scratch"
+[ -z "$(ls -A "$scratch")" ] || die "$scratch is not empty"
 if [ -z "$src" ]; then
   src="$scratch/source"
-  git init --quiet -b main "$src"
+  git init --quiet -b main "$src" || die "cannot create $src"
+  git -C "$src" config core.autocrlf false
   echo "fixture source" > "$src/README"
-  git -C "$src" add README
-  git -C "$src" -c user.name=tester -c user.email=tester@example.com -c core.autocrlf=false \
-    commit --quiet -m "chore: initial commit"
+  git -C "$src" add README && git -C "$src" -c user.name=tester -c user.email=tester@example.com \
+    commit --quiet -m "chore: initial commit" || die "cannot commit in $src"
 fi
-src=$(cd "$src" && pwd) # absolute: each section clones it again from its own directory
+src=$(cd "$src" && pwd) || die "cannot enter $src" # absolute: each section clones it from its own dir
 
 # A bare copy of $src in <dir>/remote.git and a clone of it in <dir>/work; cd there.
 clone_into() { # dir
-  git clone --quiet --bare "$src" "$1/remote.git"
-  git clone --quiet "$1/remote.git" "$1/work"
-  cd "$1/work"
+  local bare="$1/remote.git"
+  { [ ! -e "$bare" ] && [ ! -e "$1/work" ]; } || die "$1 already holds a fixture copy"
+  git clone --quiet --bare "$src" "$bare" || die "cannot clone $src (it must be a git repository)"
+  # git's own spelling of the path (C:/… on Windows): the URL it records for origin.
+  bare=$(git -C "$bare" rev-parse --absolute-git-dir) || die "cannot read $1/remote.git"
+  git clone --quiet "$bare" "$1/work" || die "cannot clone $bare"
+  cd "$1/work" || die "cannot enter $1/work"
+  { [ "$(git remote)" = origin ] && [ "$(git remote get-url --push origin)" = "$bare" ]; } \
+    || die "the scratch clone's only remote must be origin = $bare"
+  # Second lock: a pre-push hook refuses any push that is not to the scratch bare repo (its own
+  # hooksPath, so a global core.hooksPath cannot bypass it).
+  local hooks; hooks="$(git rev-parse --absolute-git-dir)/hooks"
+  mkdir -p "$hooks" && git config core.hooksPath "$hooks" || die "cannot install the pre-push hook"
+  printf '#!/bin/sh\n[ "$2" = %s ] || { echo "fixtures: refusing push to $2" >&2; exit 1; }\n' \
+    "'$bare'" > "$hooks/pre-push" && chmod +x "$hooks/pre-push" || die "cannot install the pre-push hook"
   git config user.name tester
   git config user.email tester@example.com
   git config core.autocrlf false
@@ -38,7 +55,9 @@ clone_into() { # dir
 }
 # A new section's own copy of $src, so it never depends on the state the other sections left.
 fresh() { # name
-  mkdir -p "$scratch/$1"; clone_into "$scratch/$1"; echo "  [fixture] fresh copy $1 (default branch $def)"
+  [ ! -e "$scratch/$1" ] || die "$scratch/$1 already exists"
+  mkdir "$scratch/$1" || die "cannot create $scratch/$1"
+  clone_into "$scratch/$1"; echo "  [fixture] fresh copy $1 (default branch $def)"
 }
 
 misses=0
@@ -68,6 +87,7 @@ check() {
   local what=$1; shift
   if "$@"; then echo "  [check] $what"; else miss "check failed: $what"; fi
 }
+not() { ! "$@"; }
 
 # What the automation would do, done by hand in the fixture.
 tag() { git -c user.name='github-actions[bot]' tag -a "$1" "$2" -m "$1"; git push --quiet origin "refs/tags/$1"; echo "  [fixture] tagged $1"; }
@@ -84,6 +104,31 @@ merge_into_default() { # line
 }
 
 clone_into "$scratch"
+
+# Runs of this script from inside this script set FIXTURES_NESTED, and never run section 0 again.
+if [ -z "${FIXTURES_NESTED-}" ]; then
+  echo "=== 0. the fixtures never push outside their scratch copy"
+  # A checkout whose origin stands in for a real remote (e.g. the kit's own repository on GitHub).
+  git clone --quiet --bare "$src" "$scratch/canary.git"; git clone --quiet "$scratch/canary.git" "$scratch/canary"
+  canary_refs() { git -C "$scratch/canary.git" for-each-ref --format='%(refname)'; }
+  refs_before=$(canary_refs)
+  mkdir -p "$scratch/guard-dirty/kept" "$scratch/not-a-repo"
+  echo; echo "\$ fixtures.sh \"\" <a dir that is not empty>, run from the checkout   [expect exit 1: \"is not empty\"]"
+  out=$(cd "$scratch/canary" && FIXTURES_NESTED=1 bash "$kit/test/fixtures.sh" "" "$scratch/guard-dirty" 2>&1); code=$?
+  printf '%s\n' "$out" | tail -n 2; echo "(exit $code)"
+  check "a scratch dir that is not empty exits 1" [ "$code" -eq 1 ]
+  check "it says why" grep -qF "is not empty" <<<"$out"
+  check "it leaves that dir as it was" [ "$(ls -A "$scratch/guard-dirty")" = kept ]
+  echo; echo "\$ fixtures.sh <not a git repository> <empty dir>, run from the checkout   [expect exit 1: \"cannot clone\"]"
+  out=$(cd "$scratch/canary" && FIXTURES_NESTED=1 bash "$kit/test/fixtures.sh" "$scratch/not-a-repo" "$scratch/guard-bad-src" 2>&1); code=$?
+  printf '%s\n' "$out" | tail -n 2; echo "(exit $code)"
+  check "a source that is not a git repository exits 1" [ "$code" -eq 1 ]
+  check "it says why" grep -qF "cannot clone" <<<"$out"
+  check "the checkout's origin got no push" [ "$(canary_refs)" = "$refs_before" ]
+  check "the scratch clone refuses a push to any other URL" \
+    not git -C "$scratch/work" push --quiet "$scratch/canary.git" HEAD:refs/heads/hook-test
+  echo
+fi
 
 echo "=== 1. starting state"
 expect ok status
