@@ -47,22 +47,29 @@ jobs:
           if ! [[ $VERSION =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "::error::version must be X.Y.Z (e.g. 1.0.0), got \"$VERSION\""; exit 1
           fi
-          tag="v$VERSION"; major="v${BASH_REMATCH[1]}"
+          tag="v$VERSION"; major="v${BASH_REMATCH[1]}"; head=$(git rev-parse HEAD)
+          # A re-run after a failed push of the major tag finds vX.Y.Z on this same commit:
+          # keep it and move the major tag again.
+          rerun=false
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "::error::$tag already exists"; exit 1
+            if [ "$(git rev-parse "$tag^{commit}")" != "$head" ]; then
+              echo "::error::$tag already exists on another commit"; exit 1
+            fi
+            rerun=true
           fi
           last=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
-          if [ -n "$last" ] && [ "$(printf '%s\n%s\n' "$last" "$tag" | sort -V | tail -n 1)" != "$tag" ]; then
+          if [ "$rerun" = false ] && [ -n "$last" ] && [ "$(printf '%s\n%s\n' "$last" "$tag" | sort -V | tail -n 1)" != "$tag" ]; then
             echo "::error::$tag must be greater than the last release, $last"; exit 1
           fi
-          echo "last release: ${last:-none}; new: $tag on $(git rev-parse --short=12 HEAD); moves $major"
-          { echo "tag=$tag"; echo "major=$major"; } >> "$GITHUB_OUTPUT"
+          echo "last release: ${last:-none}; new: $tag on ${head:0:12} (re-run: $rerun); moves $major"
+          { echo "tag=$tag"; echo "major=$major"; echo "rerun=$rerun"; } >> "$GITHUB_OUTPUT"
       - name: Run the fixtures
         run: bash test/fixtures.sh "" "$RUNNER_TEMP/fx"
       - name: Tag
         env:
           TAG: ${{ steps.version.outputs.tag }}
           MAJOR: ${{ steps.version.outputs.major }}
+          RERUN: ${{ steps.version.outputs.rerun }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
@@ -73,8 +80,12 @@ jobs:
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git tag --annotate "$TAG" "$sha" --message "release-kit $TAG"
-          git push origin "refs/tags/$TAG"
+          if [ "$RERUN" = true ]; then
+            echo "✓ $TAG already on ${sha:0:12}"
+          else
+            git tag --annotate "$TAG" "$sha" --message "release-kit $TAG"
+            git push origin "refs/tags/$TAG"
+          fi
           git tag --force --annotate "$MAJOR" "$sha" --message "release-kit $MAJOR (now $TAG)"
           git push --force origin "refs/tags/$MAJOR"
           echo "✓ $TAG on ${sha:0:12}; $MAJOR moved to it"

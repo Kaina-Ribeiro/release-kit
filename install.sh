@@ -102,12 +102,15 @@ fi
 
 # An installation from before the reusable workflows: the required checks were `checks` and
 # `conventions`; now they are `pr-checks / checks` and `pr-checks / conventions`. The update
-# rewrites only those names in the existing rulesets and keeps everything else (bypass list,
-# approvals) as the repository has it.
+# rewrites only those names in the existing rulesets and sends every other field back as the
+# repository has it (name, conditions, bypass list, approvals: rulesets get tuned by hand),
+# then reads each one back.
 upgrade=''
 if [ -e "$root/.github/scripts/release.mjs" ]; then
-  # Prints {"rules": …} with the two contexts renamed, or nothing when the ruleset has neither.
-  rename='node -e '\''let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);let n=0;for(const x of r.rules)if(x.type==="required_status_checks")for(const c of x.parameters.required_status_checks)if(c.context==="checks"||c.context==="conventions"){c.context="pr-checks / "+c.context;n++}if(n)console.log(JSON.stringify({rules:r.rules}))})'\'''
+  # Prints the whole ruleset (its writable fields) with the two contexts renamed, or nothing
+  # when it requires neither.
+  rename='node -e '\''let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);let n=0;for(const x of r.rules)if(x.type==="required_status_checks")for(const c of x.parameters.required_status_checks)if(c.context==="checks"||c.context==="conventions"){c.context="pr-checks / "+c.context;n++}if(n)console.log(JSON.stringify({name:r.name,target:r.target,enforcement:r.enforcement,conditions:r.conditions,bypass_actors:r.bypass_actors??[],rules:r.rules}))})'\'''
+  readback='"\(.name): \([.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | join(", ")); bypass \([.bypass_actors[]? | "\(.actor_type):\(.actor_id):\(.bypass_mode)"] | join(","))"'
   upgrade="
 This repository has the old installation (.github/scripts/release.mjs). Also:
 
@@ -122,7 +125,24 @@ This repository has the old installation (.github/scripts/release.mjs). Also:
     body=\$(gh api repos/$repo/rulesets/\$id | $rename)
     if [ -n \"\$body\" ]; then printf '%s' \"\$body\" | gh api -X PUT repos/$repo/rulesets/\$id --input - --jq '\"updated \\(.id) \\(.name)\"'; fi
   done
+  # c. Read them back: the new check names and the same bypass list as before
+  for id in \$(gh api repos/$repo/rulesets --jq '.[] | select(.target == \"branch\") | .id'); do
+    gh api repos/$repo/rulesets/\$id --jq '$readback'
+  done
+
+The other settings (merge methods, Actions PRs, token, rulesets, variables) came with the first
+install; nothing else to apply.
 "
+  cat <<EOF
+
+Kit callers installed into $root (repository: $repo, owner type: $owner_type, default branch: ${default:-unknown}).
+They run $kit_repo's reusable workflows at @$kit_ref.
+Nothing was committed, pushed or applied. Review the files, commit them on a branch, open a PR.
+$upgrade
+Check the state at any time (fetches the pinned release.mjs into .git, never committed):
+  curl -fsSL https://raw.githubusercontent.com/$kit_repo/$kit_ref/release.mjs -o .git/release.mjs && node .git/release.mjs status
+EOF
+  exit 0
 fi
 
 cat <<EOF
@@ -130,7 +150,7 @@ cat <<EOF
 Kit callers installed into $root (repository: $repo, owner type: $owner_type, default branch: ${default:-unknown}).
 They run $kit_repo's reusable workflows at @$kit_ref.
 Nothing was committed, pushed or applied. Review the files, commit them on a branch, open a PR.
-$upgrade
+
 Then apply the GitHub settings yourself (run from $root; read RELEASING.md "Setup" first):
 
   # 1. Merge methods: merge commit + squash, no rebase
