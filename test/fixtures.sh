@@ -21,6 +21,16 @@ git config core.autocrlf false
 def=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')
 
 r() { echo; echo "\$ release.mjs $*"; node "$kit/release.mjs" "$@"; echo "(exit $?)"; }
+# Like r, but checks the exit code: expect ok|fail <args>. Any miss makes the script exit 1.
+misses=0
+expect() {
+  local want=$1; shift
+  echo; echo "\$ release.mjs $*   [expect $want]"; node "$kit/release.mjs" "$@"; local code=$?
+  echo "(exit $code)"
+  if { [ "$want" = ok ] && [ $code -ne 0 ]; } || { [ "$want" = fail ] && [ $code -eq 0 ]; }; then
+    echo "  ✗ MISS: expected $want"; misses=$((misses + 1))
+  fi
+}
 # What the automation would do, done by hand in the fixture.
 tag() { git -c user.name='github-actions[bot]' tag -a "$1" "$2" -m "$1"; git push --quiet origin "refs/tags/$1"; echo "  [fixture] tagged $1"; }
 branch() { git push --quiet origin "$(git rev-parse "$2^{commit}"):refs/heads/$1"; echo "  [fixture] created $1"; }
@@ -122,6 +132,7 @@ mock=$!
 trap 'kill $mock 2>/dev/null' EXIT
 sleep 1
 export CUBESHIP_URL="http://127.0.0.1:$port" CUBESHIP_TOKEN=test-key RELEASE_DEPLOY_POLL_MS=50
+export RELEASE_HEALTH_POLL_MS=50 RELEASE_HEALTH_STABLE_S=1 RELEASE_HEALTH_WAIT_S=2
 export DEPLOY_TEST_APPS="demo/test/api demo/test/web" DEPLOY_PROD_APPS="demo/prod/api,demo/prod/web"
 tag v0.3.1-rc origin/release/v0.3
 r deploy --stage test --dry-run
@@ -129,6 +140,15 @@ r deploy --stage test --branch release/v0.3
 r deploy --stage test --branch release/v0.3
 r deploy --stage prod v0.3.0-rc.1
 r deploy-check v0.3.1-rc --prod
+
+echo; echo "=== 8b. a deploy whose container does not stay up fails, though Cubeship says \"succeeded\""
+expect ok   deploy --stage test v0.3.1-rc --apps demo/test/api
+expect fail deploy --stage test v0.3.1-rc --apps demo/test/crash
+echo "  (a re-run sees \"already runs\" and must still check the container)"
+expect fail deploy --stage test v0.3.1-rc --apps demo/test/crash
+expect fail deploy --stage test v0.3.1-rc --apps demo/test/dead
+echo "  (RELEASE_HEALTH_STABLE_S=0 turns the check off)"
+RELEASE_HEALTH_STABLE_S=0 expect ok deploy --stage test v0.3.1-rc --apps demo/test/dead
 
 echo; echo "=== 9. release day: prod gets the last rc first, the merge only tags it"
 git checkout --quiet -B release/v0.3 origin/release/v0.3
@@ -142,6 +162,11 @@ r deploy --stage prod
 r final --head release/v0.3 --dry-run
 kill $mock 2>/dev/null
 unset CUBESHIP_URL CUBESHIP_TOKEN DEPLOY_TEST_APPS DEPLOY_PROD_APPS RELEASE_DEPLOY_POLL_MS
+unset RELEASE_HEALTH_POLL_MS RELEASE_HEALTH_STABLE_S RELEASE_HEALTH_WAIT_S
 
 echo; echo "=== 10. final state"
 r status
+
+echo
+if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
+echo "✓ all expectations met"

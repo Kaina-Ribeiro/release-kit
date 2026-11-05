@@ -73,6 +73,14 @@ breaks these rules; call it from any other deploy tool. `deploy <tag> --stage te
 then points each app at the tag and deploys it on Cubeship, in order, waiting for each.
 Actions → Release → `deploy` is the same as a button (also for rollback).
 
+**A deploy is green only if the app stays up.** Cubeship calls a deploy "succeeded" as soon as
+it starts the new container, even when the process dies a second later (a missing env var, a
+failed migration) and crashloops. So after each app, `deploy` watches Cubeship's live container
+list and fails, red in Actions, unless that deploy's container comes up and is not restarted for
+60 s; the next app in the list is not deployed. A re-run checks again instead of trusting the
+earlier "succeeded". When it fails: read the app's logs in Cubeship, fix and ship a new rc, or
+roll back by deploying the previous tag.
+
 ## Before acting
 
 - `git fetch --all --tags` first; reason from remote state, not local.
@@ -129,6 +137,11 @@ Files: `.github/scripts/release.mjs`, `.github/workflows/release.yml`,
    apps. The apps must build from Git (dockerfile or railpack); the automation sets their `ref`
    to the tag. An empty list turns that stage off. Turn off GitHub's "Automatically delete head
    branches": it would delete a release on merge even when `final` refuses.
+   The health check after each deploy reads Cubeship's live containers, so the key needs view on
+   servers (Cubeship's Deploy role has it). Optional variables: `RELEASE_HEALTH_STABLE_S`, how
+   long a new container must run without restarting (default `60`; `0` turns the check off), and
+   `RELEASE_HEALTH_WAIT_S`, how long to wait for it to come up (default `300`). Each deploy takes
+   about a minute longer because of it.
 7. Bots that open PRs against the default branch (Dependabot, Renovate) must target the open
    release instead (Dependabot: `target-branch`), or the `conventions` check fails.
 

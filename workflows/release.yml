@@ -6,7 +6,8 @@
 # GITHUB_TOKEN. With GITHUB_TOKEN, sync PRs, tags and branches it creates do not trigger other
 # workflows, so required checks never run on sync PRs. See RELEASING.md, "Setup".
 # Deploys (optional): vars.CUBESHIP_URL, vars.DEPLOY_TEST_APPS, vars.DEPLOY_PROD_APPS and
-# secrets.CUBESHIP_TOKEN. Without DEPLOY_*_APPS nothing is deployed.
+# secrets.CUBESHIP_TOKEN. Without DEPLOY_*_APPS nothing is deployed. A deploy fails unless each app's
+# container stays up afterwards; vars.RELEASE_HEALTH_STABLE_S / RELEASE_HEALTH_WAIT_S tune that.
 name: Release
 
 on:
@@ -52,6 +53,8 @@ env:
   CUBESHIP_TOKEN: ${{ secrets.CUBESHIP_TOKEN }}
   DEPLOY_TEST_APPS: ${{ vars.DEPLOY_TEST_APPS }}
   DEPLOY_PROD_APPS: ${{ vars.DEPLOY_PROD_APPS }}
+  RELEASE_HEALTH_STABLE_S: ${{ vars.RELEASE_HEALTH_STABLE_S }}
+  RELEASE_HEALTH_WAIT_S: ${{ vars.RELEASE_HEALTH_WAIT_S }}
 
 jobs:
   rc:

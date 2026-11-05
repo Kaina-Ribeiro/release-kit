@@ -16,13 +16,15 @@
 //                (version lines and the default branch are never deleted here)
 //   deploy-check gate a deploy: any release tag for test stages; --prod only for the last rc of an
 //                open line, or a final whose code equals its rc (rollback)
-//   deploy       deploy a release tag to the test or prod apps on Cubeship (passes deploy-check first)
+//   deploy       deploy a release tag to the test or prod apps on Cubeship (passes deploy-check first),
+//                then fail unless each app's container comes up and stays up (see waitForHealthy)
 //   status       print the release state of the repo (read-only)
 //
 // Flags: --dry-run (print, change nothing), --no-fetch, --branch, --sha, --head, --version,
 //        --title, --base, --prod, --stage, --apps. Env: DEFAULT_BRANCH, GITHUB_REPOSITORY,
 //        GH_TOKEN/GITHUB_TOKEN, TICKET_PATTERN, PR_TITLE, HEAD_REF, BASE_REF, HEAD_SHA,
-//        CUBESHIP_URL, CUBESHIP_TOKEN, DEPLOY_TEST_APPS, DEPLOY_PROD_APPS.
+//        CUBESHIP_URL, CUBESHIP_TOKEN, DEPLOY_TEST_APPS, DEPLOY_PROD_APPS,
+//        RELEASE_HEALTH_STABLE_S, RELEASE_HEALTH_WAIT_S.
 
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -357,17 +359,88 @@ async function waitForDeploy(ref, id) {
   }
 }
 
-// Points each app at the tag and deploys it, in the listed order (e.g. api before web).
+// Seconds from the environment; unset or empty (an unset GitHub variable) means the default.
+function envSeconds(name, fallback) {
+  const raw = (process.env[name] ?? '').trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) fail(`${name} must be a number of seconds, got "${raw}"`);
+  return n;
+}
+const HEALTH_POLL_MS = Number(process.env.RELEASE_HEALTH_POLL_MS) || 5_000;
+
+// Cubeship calls a deploy "succeeded" once it has started the new container, and the app's
+// `replicas` keep saying `running` while that container crashloops (a missing env var, a failed
+// migration). The live view is /instance/containers: one entry per running container, named by
+// app reference, with its `started_at`, refreshed every ~30 s. A crashloop shows there as a
+// `started_at` that keeps changing, or as no entry at all. So after each deploy: wait up to
+// RELEASE_HEALTH_WAIT_S (default 300) for a snapshot whose containers for this app all started
+// after the deploy began, then require a snapshot RELEASE_HEALTH_STABLE_S (default 60) later to
+// show the same containers, none restarted. RELEASE_HEALTH_STABLE_S=0 turns the check off.
+async function waitForHealthy(ref, deploy) {
+  const stableS = envSeconds('RELEASE_HEALTH_STABLE_S', 60);
+  if (stableS === 0) { log(`  (RELEASE_HEALTH_STABLE_S=0: not checking that ${ref} stays up)`); return; }
+  const waitS = envSeconds('RELEASE_HEALTH_WAIT_S', 300);
+  // A skipped deploy started no container, so whatever runs must just stay up.
+  const since = deploy.status === 'skipped' ? 0 : Date.parse(deploy.created_at ?? '');
+  if (!Number.isFinite(since)) fail(`${ref}: deploy #${deploy.id} has no created_at; cannot tell its containers from older ones`);
+  const started = Date.now();
+  let first = null; // the first snapshot that shows this deploy's containers: { at, starts }
+  let errors = 0;
+  for (;;) {
+    let list = null;
+    try {
+      list = await cubeship('GET', '/instance/containers');
+      errors = 0;
+    } catch (err) {
+      if (err instanceof Failure && /: 40[134] /.test(err.message)) {
+        fail(`${ref}: cannot read Cubeship's live containers to check that the deploy stays up (${err.message}). `
+          + 'Give the CUBESHIP_TOKEN key view on servers (the Deploy role has it), or set RELEASE_HEALTH_STABLE_S=0 to skip the check.');
+      }
+      if (err instanceof Failure || ++errors > MAX_POLL_ERRORS) throw err;
+      warn(`could not read Cubeship's live containers (${err.cause?.code || err.message}); retrying`);
+    }
+    const items = Array.isArray(list) ? list : (list?.items ?? []);
+    if (items.length) {
+      const at = Date.parse(items[0].at ?? '') || Date.now();
+      const starts = items.filter((c) => c.kind === 'app' && c.name === ref).map((c) => c.started_at).sort();
+      const fresh = starts.length > 0 && starts.every((t) => Date.parse(t) >= since);
+      if (!first) {
+        if (fresh) first = { at, starts: starts.join(', ') };
+      } else if (starts.join(', ') !== first.starts) {
+        fail(`${ref}: deploy #${deploy.id} is not staying up: its container started at ${first.starts}, then `
+          + (starts.length ? `started again at ${starts.join(', ')}` : 'stopped')
+          + '. Cubeship still calls the deploy "succeeded". Read its logs in Cubeship, or roll back by deploying the previous tag.');
+      } else if (at - first.at >= stableS * 1000) {
+        return;
+      }
+    }
+    if (!first && Date.now() - started > waitS * 1000) {
+      fail(`${ref}: deploy #${deploy.id} did not come up in ${waitS}s (no container of it running). `
+        + 'Cubeship may still call the deploy "succeeded". Read its logs in Cubeship, or roll back by deploying the previous tag.');
+    }
+    await sleep(HEALTH_POLL_MS);
+  }
+}
+
+// Points each app at the tag and deploys it, in the listed order (e.g. api before web), and stops
+// at the first app whose container does not stay up, so a broken api never gets a web in front.
 async function deployTag(tag, apps) {
   for (const ref of apps) {
     if (dryRun && !hasCubeship()) { act(`set ${ref} to ${tag} and deploy it`); continue; }
     const app = await getBuildingApp(ref);
-    if (await runs(ref, app, tag)) { log(`✓ ${ref} already runs ${tag}`); continue; }
+    if (await runs(ref, app, tag)) {
+      // A re-run of a failed job lands here too: "succeeded" in Cubeship says nothing about now.
+      if (!dryRun) await waitForHealthy(ref, await lastDeployment(ref));
+      log(`✓ ${ref} already runs ${tag}`);
+      continue;
+    }
     // A re-run after a dropped wait: that deploy of this tag is still going, so wait for it.
     const last = app.ref === tag ? await lastDeployment(ref) : null;
     if (!dryRun && last?.status === 'pending' && last.git_sha === commitOf(tag)) {
       log(`${ref} is already deploying ${tag} (deploy #${last.id}); waiting for it`);
       const done = await waitForDeploy(ref, last.id);
+      await waitForHealthy(ref, done);
       log(`✓ ${ref} runs ${tag} (deploy #${done.id})`);
       continue;
     }
@@ -379,6 +452,8 @@ async function deployTag(tag, apps) {
     });
     const started = await cubeship('POST', `${appPath(ref)}/deploy`, {});
     const done = await waitForDeploy(ref, started.id);
+    log(`  ${ref}: deploy #${done.id} built and started; checking that it stays up`);
+    await waitForHealthy(ref, done);
     log(`✓ ${ref} runs ${tag} (deploy #${done.id}, ${Math.round((done.duration_ms ?? 0) / 1000)}s)`);
   }
 }
