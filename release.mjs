@@ -4,8 +4,9 @@
 //
 //   rc           tag vX.Y.Z-rc on a push to release/vX.Y or hotfix/vX.Y, plus a prerelease;
 //                skips a commit that already has a final or an older line's rc (a cut: no new code);
-//                every new candidate takes the next patch (v0.2.0-rc, v0.2.1-rc, …)
-//   sync         open "chore(sync): merge A into B" into the next open release line
+//                every new candidate takes the next patch (v0.2.0-rc, v0.2.1-rc, …); rc and final
+//                re-runs on an already-tagged commit create the GitHub release if it is missing
+//   sync        open "chore(sync): merge A into B" into the next open release line
 //   final        tag the line's last rc as final (v0.2.1-rc → v0.2.1) on the merge of a version line
 //                into the default branch, plus a release; refuses when prod does not run that rc
 //                (if DEPLOY_PROD_APPS is set); then opens "chore(sync): merge <default> into <release>"
@@ -214,22 +215,29 @@ function repoSlug() {
 }
 const token = () => process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
 
-async function api(method, path, body) {
+// missingOk: a 404 answers null instead of failing (looking something up).
+async function api(method, path, body, { missingOk = false } = {}) {
   const slug = repoSlug();
   if (!slug) fail('cannot tell the GitHub repository; set GITHUB_REPOSITORY=owner/name');
   if (!token()) fail('GitHub API needs GH_TOKEN or GITHUB_TOKEN');
   const base = process.env.GITHUB_API_URL || 'https://api.github.com';
-  const res = await fetch(`${base}/repos/${slug}${path}`, {
-    method,
-    headers: {
-      accept: 'application/vnd.github+json',
-      authorization: `Bearer ${token()}`,
-      'x-github-api-version': '2022-11-28',
-      ...(body ? { 'content-type': 'application/json' } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(`${base}/repos/${slug}${path}`, {
+      method,
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${token()}`,
+        'x-github-api-version': '2022-11-28',
+        ...(body ? { 'content-type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) { // GitHub unreachable: a message, not a Node stack
+    fail(`GitHub API ${method} ${path}: ${err.cause?.code || err.cause?.message || err.message}`);
+  }
   const text = await res.text();
+  if (missingOk && res.status === 404) return null;
   if (!res.ok) fail(`GitHub API ${method} ${path}: ${res.status} ${text.slice(0, 300)}`);
   return text ? JSON.parse(text) : null;
 }
@@ -270,6 +278,19 @@ async function createRelease(tag, sha, previous, prerelease) {
   await api('POST', '/releases', {
     tag_name: tag, name: tag, body: notes.body, prerelease, make_latest: prerelease ? 'false' : 'true',
   });
+}
+
+// The GitHub release of a tag that is already out. A run that pushed the tag and then failed to
+// create the release (a GitHub error) leaves it missing, and its re-run only lands on "already";
+// so the re-run creates it. Unlike the steps after a ship, an API error here fails the job: a
+// missing release must show.
+async function ensureRelease(tag, sha, previous, prerelease) {
+  if (dryRun && !token()) { log(`  (no GitHub token: skipping the check for the ${tag} release)`); return; }
+  if (await api('GET', `/releases/tags/${encodeURIComponent(tag)}`, undefined, { missingOk: true })) {
+    log(`✓ release ${tag} already exists`);
+    return;
+  }
+  await createRelease(tag, sha, previous, prerelease);
 }
 
 // The sync PR's number (the open one, or the one it opens); null under --dry-run.
@@ -551,6 +572,10 @@ async function cmdRc() {
   const already = rcs.find((r) => commitOf(r.name) === sha);
   if (already) {
     log(`✓ ${sha.slice(0, 12)} is already ${already.name}; nothing to do`);
+    // A re-run of a job that tagged and then failed: notes since the rc before it, as the first run.
+    const before = rcs[rcs.indexOf(already) - 1]?.name
+      ?? finals().filter((f) => cmpTag(f, already) < 0).at(-1)?.name;
+    await ensureRelease(already.name, sha, before, true);
     output('tag', already.name);
     return;
   }
@@ -600,6 +625,8 @@ async function cmdFinal() {
   const shipped = finalsOf(line.major, line.minor).at(-1);
   if (shipped && commitOf(shipped.name) === sha) {
     log(`✓ ${shipped.name} already on ${sha.slice(0, 12)}`);
+    const before = finals().filter((f) => cmpTag(f, shipped) < 0).at(-1)?.name;
+    await ensureRelease(shipped.name, sha, before, false);
     await afterShip(head, shipped.name, sha);
     return;
   }

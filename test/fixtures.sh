@@ -183,11 +183,15 @@ tag v0.2.2-rc origin/release/v0.2
 expect_out ok "→ v0.2.2 (same code as v0.2.2-rc)" final --head release/v0.2 --dry-run
 echo "  (release/v0.3 lacks $def's merge, so shipping opens the sync PR before the branch goes)"
 expect_out ok "would open PR \"chore(sync): merge $def into release/v0.3\"" final --head release/v0.2 --dry-run
+echo "  (GitHub down while shipping: the sync PR and the comments only warn, since the tag is out)"
+GH_TOKEN=x GITHUB_API_URL=http://127.0.0.1:9 expect_out ok "warning: could not open the sync PR" final --head release/v0.2 --dry-run
 tag v0.2.2 "origin/$def"
-echo "  (a re-run once the tag exists does not fail, still suggests the sync, and survives a GitHub outage)"
+echo "  (a re-run once the tag exists does not fail and still suggests the sync)"
 expect_out ok "already on" final --head release/v0.2 --dry-run
+expect_out ok "(no GitHub token: skipping the check for the v0.2.2 release)" final --head release/v0.2 --dry-run
 expect_out ok "would open PR \"chore(sync): merge $def into release/v0.3\"" final --head release/v0.2 --dry-run
-GH_TOKEN=x GITHUB_API_URL=http://127.0.0.1:9 expect_out ok "warning:" final --head release/v0.2 --dry-run
+echo "  (but a re-run that cannot check the tag's GitHub release fails: a missing release must show)"
+GH_TOKEN=x GITHUB_API_URL=http://127.0.0.1:9 expect_out fail "GitHub API GET /releases/tags/v0.2.2" final --head release/v0.2 --dry-run
 expect_out fail "already shipped as v0.2.2" rc --branch release/v0.2 --dry-run
 
 echo; echo "=== 5. hotfix on v0.2"
@@ -341,6 +345,35 @@ echo "  (a re-run once GitHub allows it opens the sync PR and points #1 at it)"
 expect_out ok "✓ opened #2" final --head hotfix/v0.1
 check "the comment on #1 points at #2" grep -qF \
   "comment #1: Closed because hotfix/v0.1 shipped as v0.1.1; its changes reach release/v0.2 through #2." "$scratch/ghmock/log"
+kill $ghmock 2>/dev/null
+
+echo; echo "=== 14c. a re-run creates the GitHub release that a failed run left missing"
+fresh rel
+mkdir "$scratch/ghmock-rel"
+node "$kit/test/github-mock.mjs" 47126 "$scratch/ghmock-rel" &
+ghmock=$!
+sleep 1
+export GITHUB_API_URL=http://127.0.0.1:47126 GH_TOKEN=test-token
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): one"
+touch "$scratch/ghmock-rel/fail-next-release"
+echo "  (the rc job pushes the tag, then GitHub fails to create its prerelease)"
+expect_out fail "GitHub API POST /releases: 500" rc --branch release/v0.1
+check "the rc tag is out" git ls-remote --quiet --exit-code --tags origin refs/tags/v0.1.0-rc
+check "it has no prerelease" not grep -q "^release v0.1.0-rc" "$scratch/ghmock-rel/log"
+expect_out ok "create GitHub prerelease v0.1.0-rc" rc --branch release/v0.1
+check "the re-run created the prerelease" grep -qx "release v0.1.0-rc (prerelease)" "$scratch/ghmock-rel/log"
+expect_out ok "release v0.1.0-rc already exists" rc --branch release/v0.1
+merge_into_default release/v0.1
+touch "$scratch/ghmock-rel/fail-next-release"
+echo "  (the final job pushes the tag, then GitHub fails to create its release)"
+expect_out fail "GitHub API POST /releases: 500" final --head release/v0.1
+check "the final tag is out" git ls-remote --quiet --exit-code --tags origin refs/tags/v0.1.0
+check "it has no release" not grep -qx "release v0.1.0" "$scratch/ghmock-rel/log"
+expect_out ok "would create GitHub release v0.1.0" final --head release/v0.1 --dry-run
+expect_out ok "→ create GitHub release v0.1.0" final --head release/v0.1
+check "the re-run created the release" grep -qx "release v0.1.0" "$scratch/ghmock-rel/log"
+check "and then deleted the shipped branch" not git ls-remote --quiet --exit-code --heads origin release/v0.1
+expect_out ok "release v0.1.0 already exists" final --head release/v0.1
 kill $ghmock 2>/dev/null
 export GH_TOKEN=; unset GITHUB_API_URL
 

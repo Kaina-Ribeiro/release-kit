@@ -127,6 +127,9 @@ roll back by deploying the previous tag.
 - **`final` refused, "prod does not run vX.Y.Z-rc"**: the release was merged before prod got its
   last rc. Nothing was tagged and the branch stays. Run `deploy` to prod with that rc, then
   re-run the failed `final` job.
+- **`rc` or `final` failed after pushing the tag** (e.g. GitHub could not create the release):
+  re-run the failed job. The re-run sees the tag, creates the missing release or prerelease, and
+  finishes what the first run left (for `final`: the sync PR, the comments, the branch delete).
 - **`rc` refused, "already shipped"**: that release line is done. Fixes for prod go through
   `cut-hotfix`; new work goes to the next release.
 
