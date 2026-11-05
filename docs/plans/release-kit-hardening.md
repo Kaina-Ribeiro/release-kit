@@ -419,7 +419,7 @@ Para cada repo (`npac-corporation-crm`, `totem-comanda`, `ari-ribeiro-karaoke`):
 
 ### Task 4.1: comando `report` + mock do GitHub
 
-**Status:** ⏳ pending
+**Status:** ✅ done (`83a32a4`)
 
 **Files:**
 - Modify `release.mjs`: `catch` final, `cmdReport` novo, `COMMANDS`, cabeçalho
@@ -461,7 +461,7 @@ expect_out ok 'would open issue "Release automation failing: rc on hotfix/v0.2"'
 
 ### Task 4.2: job `report` no workflow reutilizável
 
-**Status:** ⏳ pending
+**Status:** ✅ done (`8cbc396`); `kit-release` 1.1.0 pendente
 
 **Files:** Modify `.github/workflows/release.yml` (reutilizável); `RELEASING.md` (seção nova "When the automation fails")
 
@@ -709,3 +709,41 @@ Revisor (subagente novo, só leitura, "skip style"): 4 achados, nenhum nos workf
 - `test/github-mock.mjs` já existe (Fase 1, seções 14b e 14c: pulls, comentários em PR e releases, portas
   47125 e 47126).
   A Task 4.1 o estende com as rotas de issues em vez de criar outro.
+
+Branch `feat/failure-issues`, 2026-11-05. Commits: `4e0097b` (harness), `83a32a4` (4.1), `8cbc396` (4.2).
+
+**Task 4.1:** a seção 16 deu 33 MISS antes da implementação (RED). Depois, os dois modos com exit 0:
+`bash test/fixtures.sh "" "$(mktemp -d)"` e `bash test/fixtures.sh . "$(mktemp -d)"` → `✓ all expectations met`
+(122 passos expect/expect_out + 32 check, 0 MISS).
+
+- A seção 16 cobre o que o SPEC pede (`would open` / `would comment on` / `would close`) e mais: o mesmo par
+  comenta sem abrir outra issue, sucesso em outro job ou linha não fecha, `skipped` não faz nada (mesmo com a linha
+  vazia), uma falha depois do fechamento abre uma issue nova, API fora do ar vira `warning` com exit 0, e um
+  `--job` inválido falha.
+- O mock usa a porta 47127 e numera pulls e issues juntos, como o GitHub.
+- Em dry-run com token, o `report` lê as issues abertas para dizer `would comment on issue #N` / `would close issue #N`;
+  sem token, só `would open issue "…"` (ou `would close … if one is open`).
+- ⚠️ **Achado fora da fase:** o modo "kit como fonte" estava quebrado desde o `kit-release` 1.0.0. O clone levava as
+  tags `v1.0.0`/`v1` do kit, e o `status`/`cut-hotfix` as liam como "em prod" (8 MISS). O CI não pegava, porque roda
+  só o modo `""`. Agora `clone_into` apaga as tags da cópia (`4e0097b`).
+
+**Task 4.2:** os jobs `rc` (`steps.rc` ou `steps.sync`), `deploy-test`, `final` e `cleanup` expõem `outputs.error`;
+o job `report` segue o desenho do plano.
+
+- Bug pego antes do sandbox: num push, `final`/`cleanup` chegam `skipped` com a linha vazia, e o `report` recusava
+  a linha antes de olhar o resultado (o `bash -e` do step quebraria o job). Agora `skipped`/`cancelled` saem antes.
+- Os chamadores ativos dos 3 repos já declaram `issues: write` (npac na `release/v0.8`; totem e ari na default):
+  nenhum PR nos repos.
+
+**Ciclo no sandbox** (`install.sh … --kit-ref feat/failure-issues`, commit `601635f` na `main`; sem Cubeship):
+
+| Passo | Run | Resultado |
+|:--|:--|:--|
+| `cut-release` (dispatch) | [42125342997](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42125342997) | ✅ `release/v0.2`; `report` pulado (run manual) |
+| Push `feat(SBX-3)` com `DEPLOY_TEST_APPS=sandbox/test/web` | [42125428163](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42125428163) | ✅ `rc` `v0.2.0-rc`; `deploy-test` ❌ `set CUBESHIP_URL to the Cubeship API…`; `report` abriu a [#4](https://github.com/Kaina-Ribeiro/release-kit-sandbox/issues/4) `Release automation failing: deploy-test on release/v0.2` |
+| Push `feat(SBX-4)` com `DEPLOY_TEST_APPS=,` | [42126293768](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42126293768) | ✅ `rc` `v0.2.1-rc`; `deploy-test` verde (`no test apps`); `report` comentou `Fixed by …/42126293768` e fechou a #4 (`completed`) |
+
+- O GitHub criou a label `release-kit` sozinho no primeiro `POST /issues`: nada a configurar nos repos.
+- `DEPLOY_TEST_APPS=,` faz o `deploy-test` rodar e passar sem Cubeship (o `if` do job vê um valor, o `release.mjs`
+  não vê apps). Serve para provar o fechamento num repo sem deploy.
+- No mesmo run, `rc` imprimiu `✓ no open issue for rc on release/v0.2` e `final`/`cleanup` `nothing to report: … was skipped`.
