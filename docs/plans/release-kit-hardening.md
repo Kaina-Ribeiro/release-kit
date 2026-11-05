@@ -513,27 +513,23 @@ done
 
 Branch `fix/kit-guards`, 2026-11-05. Commits: `cde6ea8` (1.1), `421fbce` (1.2, B3), `f3f0705` (1.3, B5),
 `55ecbe5` (1.4, B2), `56f63fd` (1.5, B1), `7e9e358` (1.6, B4), `2aaeb2b` (1.7, B6), `cb3a9bd` (README),
-`ea8ee0a` (guarda contra push), `b82a802` (achados do revisor). Cada bug teve o teste em RED antes da correção.
+`ea8ee0a` (guarda contra push), `b82a802` (achados #2 e #3 do revisor), `47ff6af` (achado #1). Cada bug teve o teste em RED antes da correção.
 
 Fim da saída de `bash test/fixtures.sh "" "$(mktemp -d)"`:
 
 ```
-  (a re-run once GitHub allows it opens the sync PR and points #1 at it)
 
-$ release.mjs final --head hotfix/v0.1   [expect ok: "✓ opened #2"]
-✓ v0.1.1 already on 7c0b107a574c
-→ open PR "chore(sync): merge main into release/v0.2"
-✓ opened #2
-→ comment on open PRs from hotfix/v0.1: "Closed because hotfix/v0.1 shipped as v0.1.1; its changes reach release/v0.2 through #2."
-✓ commented on #1
+$ release.mjs final --head release/v0.1   [expect ok: "release v0.1.0 already exists"]
+✓ v0.1.0 already on a26ca13df8c8
+✓ release v0.1.0 already exists
+✓ no open PRs from release/v0.1
 (exit 0)
-  [check] the comment on #1 points at #2
 
 ✓ all expectations met
-(85 passos expect/expect_out + 14 check, exit 0)
+(94 passos expect/expect_out + 21 check, exit 0)
 ```
 
-Com o kit como fonte (`bash test/fixtures.sh . "$(mktemp -d)"`, default branch `fix/kit-guards`): exit 0, `✓ all expectations met`, 0 MISS.
+Com o kit como fonte (`bash test/fixtures.sh . "$(mktemp -d)"`, default branch `fix/kit-guards`): exit 0, `✓ all expectations met`, 94 passos + 21 check, 0 MISS.
 
 Surpresas e decisões:
 
@@ -548,7 +544,8 @@ Surpresas e decisões:
   No Windows o git grava o caminho como `C:/…` e o bash vê `/tmp/…`, então a guarda usa o caminho do próprio
   git (`rev-parse --absolute-git-dir`); a comparação literal do `3d6edb6` falharia em toda execução. Seção 0
   prova a guarda (RED antes: com uma fonte inválida, o script fez push no `origin` do checkout).
-- **Numeração:** a seção 0 (guarda) e a 14b (B6 contra `test/github-mock.mjs`, `final` real) não ocupam a 15
+- **Numeração:** a seção 0 (guarda), a 14b (B6 contra `test/github-mock.mjs`, `final` real) e a 14c (re-run
+  cria a release que falta) não ocupam a 15
   e a 16, que a Fase 2 e a Fase 4 já usam.
 - **B1:** um run a partir de uma linha sem rc falha com `<linha> has no rc to deploy` nos dois stages (só o
   `--branch` do job `rc` mantém o no-op no test).
@@ -561,9 +558,11 @@ Revisor (subagente novo, só leitura, "skip style"): 5 achados.
 - ✅ #2 corrigido: com o sync PR recusado (ex.: o repo não deixa o Actions criar PR), o comentário apontava
   "the sync PR" inexistente.
 - ✅ #3 corrigido: nenhum `final` real exercitava POST /pulls e os comentários; agora a seção 14b faz isso.
-- ⏳ #1 não corrigido (anterior a este branch, fora do SPEC): se o POST /releases falhar depois do push da
-  tag, o re-run cai em "already on" e nunca cria a GitHub Release. O sync e os comentários rodam no re-run.
-  A Fase 4 (issue quando falha) deve tornar isso visível; criar a release no re-run fica como ideia.
+- ✅ #1 corrigido em `47ff6af` (o dono pediu antes do push): se o POST /releases falhava depois do push da
+  tag, o re-run parava em "already" (`rc`) ou "already on" (`final`) e a tag ficava sem release. Agora
+  `ensureRelease` confere `GET /releases/tags/<tag>` nos dois re-runs e cria a release (ou prerelease) que
+  falta, com as mesmas notas; um erro de API nessa conferência falha o job. Seção 14c prova (RED antes).
+  O `api()` também passou a transformar uma falha de rede em `Failure` (mensagem, sem stack).
 - Menores, adiados: o `afterShip` compara a próxima release com o commit de merge, não com o topo do default
   branch (interface do plano); o `ls-remote` do `deleteBranch` fica fora de um `try` (um re-run recupera).
 - Fora do alcance do revisor: se o `GITHUB_TOKEN` dos 3 repos consegue abrir PR e comentar, e o
@@ -578,5 +577,6 @@ Revisor (subagente novo, só leitura, "skip style"): 5 achados.
 
 ### Fase 4
 
-- `test/github-mock.mjs` já existe (Fase 1, seção 14b: pulls, comentários em PR e releases, porta 47125).
+- `test/github-mock.mjs` já existe (Fase 1, seções 14b e 14c: pulls, comentários em PR e releases, portas
+  47125 e 47126).
   A Task 4.1 o estende com as rotas de issues em vez de criar outro.
