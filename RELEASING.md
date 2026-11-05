@@ -1,7 +1,16 @@
 # Releasing
 
-How code moves from a pull request to production in this repository. The automation in
-`.github/` enforces these rules; `.github/scripts/release.mjs` holds the logic.
+How code moves from a pull request to production in this repository. The workflows in
+`.github/workflows` enforce these rules: they call the release kit
+([Kaina-Ribeiro/release-kit](https://github.com/Kaina-Ribeiro/release-kit)) pinned at `@v1`,
+whose `release.mjs` holds the logic. A kit fix reaches this repository without a PR.
+
+To run a command locally (always the pinned version; the file stays inside `.git`, never
+committed):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kaina-Ribeiro/release-kit/v1/release.mjs -o .git/release.mjs && node .git/release.mjs status
+```
 
 ## Model
 
@@ -99,8 +108,8 @@ pointing back at the previous tag.
 - The `final` tag is created only if prod already runs the line's last rc (when prod deploys
   are configured), so a final always names what prod runs.
 
-`node .github/scripts/release.mjs deploy-check <tag> [--prod]` exits non-zero when a deploy
-breaks these rules; call it from any other deploy tool. `deploy <tag> --stage test|prod` runs it,
+`node .git/release.mjs deploy-check <tag> [--prod]` (fetched as at the top of this file) exits
+non-zero when a deploy breaks these rules; call it from any other deploy tool. `deploy <tag> --stage test|prod` runs it,
 then points each app at the tag and deploys it on Cubeship, in order, waiting for each.
 Actions → Release → `deploy` is the same as a button (also for rollback). With the tag empty it
 deploys the last rc of the line you run it from (`release/vX.Y` or `hotfix/vX.Y`), or the tag
@@ -123,7 +132,8 @@ roll back by deploying the previous tag.
 - Never push directly to the default branch, `release/*` or `hotfix/*`. Never force-push them.
 - If something looks off (a release not based on the previous open release, a final tag whose
   code differs from its last rc, a manual tag), report it before continuing.
-  `node .github/scripts/release.mjs status` lists the state and flags manual tags.
+  `node .git/release.mjs status` (fetched as at the top of this file) lists the state and flags
+  manual tags.
 
 ## When the automation refuses
 
@@ -151,9 +161,11 @@ roll back by deploying the previous tag.
 
 ## Setup
 
-Files: `.github/scripts/release.mjs`, `.github/workflows/release.yml`,
-`.github/workflows/pr-checks.yml`, `.github/rulesets/*.json`, this file.
-`install.sh` in the release kit copies them and prints the `gh api` commands below.
+Files: `.github/workflows/release.yml` and `.github/workflows/pr-checks.yml` (short callers of
+the kit's reusable workflows at `@v1`: they pass the variables and secrets below to the kit),
+`.github/rulesets/*.json`, this file. `install.sh` in the release kit copies them and prints the
+`gh api` commands below. Kit versions: `vX.Y.Z` tags and a moving `v1`; a breaking change
+becomes `v2`, and each repository moves to it by PR.
 
 1. **Repository merge settings**: allow merge commits and squash merging; rebase off.
 2. **Actions → Workflow permissions**: allow GitHub Actions to create pull requests
@@ -161,11 +173,12 @@ Files: `.github/scripts/release.mjs`, `.github/workflows/release.yml`,
 3. **Token** (strongly recommended): add a `RELEASE_TOKEN` secret, a GitHub App installation
    token or an admin's fine-grained PAT with contents and pull-requests write. Without it the
    workflow falls back to `GITHUB_TOKEN`, and GitHub does not trigger workflows for what that
-   token creates: sync PRs get no `checks`/`conventions` runs and cannot merge, and pushed tags
-   do not start tag-based deploys. If the token is not an admin's, add its app to the
+   token creates: sync PRs get no `pr-checks / checks` / `pr-checks / conventions`
+   runs and cannot merge, and pushed tags do not start tag-based deploys. If the token is not an admin's, add its app to the
    `version-tags` and `version-lines` ruleset bypass lists.
 4. **Rulesets**, applied with `gh api` (see `install.sh` output):
-   - `default-branch`: PR with 1 approval, `checks` + `conventions` required, merge commit
+   - `default-branch`: PR with 1 approval, `pr-checks / checks` + `pr-checks / conventions`
+     required (the caller job `pr-checks` / the kit's jobs), merge commit
      only, no force push, no deletion.
    - `version-lines` (`release/v*`, `hotfix/v*`): the same, squash and merge commit allowed.
      GitHub Actions may bypass it so the automation can create the branches.
@@ -173,6 +186,17 @@ Files: `.github/scripts/release.mjs`, `.github/workflows/release.yml`,
      or delete.
    Solo repository? Nobody else can approve; add yourself (repository admin role, id 5) to the
    branch rulesets' bypass list with `"bypass_mode": "pull_request"`.
+   **Personal account** (no organization): GitHub rejects the GitHub Actions app as a bypass
+   actor (HTTP 422 "Actor GitHub Actions integration must be part of the ruleset source or
+   owner organization"). `install.sh` detects the owner type and then prints commands that send
+   `version-lines` and `version-tags` without that actor and with the admin role (id 5,
+   `"bypass_mode": "always"`) instead; the files in `.github/rulesets` stay as the kit ships
+   them. Here `RELEASE_TOKEN` is required and must be an admin's PAT: `GITHUB_TOKEN` cannot
+   bypass, so the automation could not create version lines or tags. If detection fails,
+   re-run with `RELEASE_KIT_OWNER_TYPE=User`.
+   Upgrading from the copied `.github/scripts/release.mjs`: `install.sh` also prints the
+   commands that remove it and rename the required checks in the existing rulesets
+   (`checks` → `pr-checks / checks`, `conventions` → `pr-checks / conventions`).
 5. **Optional variables**: `TICKET_PATTERN` (default `[A-Z][A-Z0-9]+-\d+`), `CHECKS_DIRS`,
    `CHECKS_SCRIPTS` (see `pr-checks.yml`).
 6. **Deploys** (optional, Cubeship): variables `CUBESHIP_URL` (the API, e.g.

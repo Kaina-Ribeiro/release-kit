@@ -7,9 +7,10 @@ values. `RELEASING.md` holds the rules it enforces; it is copied into each repos
 
 | File | Installed as | Does |
 |:--|:--|:--|
-| `release.mjs` | `.github/scripts/release.mjs` | `rc`, `final`, `sync`, `cleanup`, `cut-release`, `cut-hotfix`, `deploy` (fails unless each app stays up), `deploy-check`; `--dry-run` |
-| `workflows/release.yml` | `.github/workflows/release.yml` | rc + sync + test-stage deploy on push to a version line (none for a commit already tagged, e.g. a cut), branch cleanup on merge into a version line, final on merge into the default branch (plus a sync PR from the default branch into the next open release), cuts and deploys on dispatch |
-| `workflows/pr-checks.yml` | `.github/workflows/pr-checks.yml` | `checks` (install, lint, typecheck) and `conventions` (branch name, PR title, target) |
+| `release.mjs` | not installed: the kit's workflows run it at the pinned version | `rc`, `final`, `sync`, `cleanup`, `cut-release`, `cut-hotfix`, `deploy` (fails unless each app stays up), `deploy-check`; `--dry-run` |
+| `.github/workflows/release.yml`, `pr-checks.yml` | not installed: reusable workflows (`on: workflow_call`) | The jobs below; each checks out the calling repository and this kit at `job.workflow_sha` |
+| `workflows/release.yml` | `.github/workflows/release.yml` | Caller of the kit's `release.yml@v1` (passes vars and secrets): rc + sync + test-stage deploy on push to a version line (none for a commit already tagged, e.g. a cut), branch cleanup on merge into a version line, final on merge into the default branch (plus a sync PR from the default branch into the next open release), cuts and deploys on dispatch |
+| `workflows/pr-checks.yml` | `.github/workflows/pr-checks.yml` | Caller of the kit's `pr-checks.yml@v1`: required checks `pr-checks / checks` (install, lint, typecheck) and `pr-checks / conventions` (branch name, PR title, target) |
 | `rulesets/*.json` | GitHub settings | Default branch, version lines and `v*` tags |
 | `RELEASING.md` | `RELEASING.md` | The rules, for the people working on the repository |
 
@@ -44,11 +45,27 @@ What the automation refuses or does on its own, beyond tagging (details in `RELE
 ## Install into a repository
 
 ```bash
-bash install.sh ../some-repo
+bash install.sh ../some-repo [--force] [--kit-ref v1]
 ```
 
-It copies the files and prints the `gh api` commands that apply the rulesets. It never applies
-them itself: review, then run them.
+It copies the callers, the rulesets and `RELEASING.md`, and prints the `gh api` commands that
+apply the settings. It never applies them itself: review, then run them. `--kit-ref` points the
+callers at another kit ref (a branch, to try a change in a sandbox). On a repository with the
+old copied `.github/scripts/release.mjs` it also prints how to remove it and rename the
+required checks in the existing rulesets.
+
+Run a command locally against a repository (the pinned version, kept inside `.git`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kaina-Ribeiro/release-kit/v1/release.mjs -o .git/release.mjs && node .git/release.mjs status
+```
+
+## Release the kit
+
+Actions → Kit release → `version` = `X.Y.Z` (dry run by default). From `master` only: it runs
+the fixtures, refuses a version that exists or is not greater than the last one, tags `vX.Y.Z`
+and moves `vX` to it. Every repository on `@vX` gets the change on its next run, so a release
+is an outward action: run it only with the owner's yes. A breaking change takes a new major.
 
 ## Test
 

@@ -31,8 +31,8 @@
         "strict_required_status_checks_policy": false,
         "do_not_enforce_on_create": true,
         "required_status_checks": [
-          { "context": "checks", "integration_id": 15368 },
-          { "context": "conventions", "integration_id": 15368 }
+          { "context": "pr-checks / checks", "integration_id": 15368 },
+          { "context": "pr-checks / conventions", "integration_id": 15368 }
         ]
       }
     }

@@ -1,0 +1,80 @@
+# Releases the kit: runs the fixtures, tags vX.Y.Z (annotated) on this run's commit and moves the
+# major tag vX to it. Repositories call the reusable workflows at @vX, so moving vX ships the
+# release to all of them at once; a breaking change takes a new major instead. Not installed into
+# repositories.
+name: Kit release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'X.Y.Z, greater than the last release (e.g. 1.0.0)'
+        type: string
+        required: true
+      dry_run:
+        description: Only print what would happen
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kit-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          package-manager-cache: false
+      - name: Check the version
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::run it from $DEFAULT_BRANCH, not $GITHUB_REF_NAME"; exit 1
+          fi
+          if ! [[ $VERSION =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::version must be X.Y.Z (e.g. 1.0.0), got \"$VERSION\""; exit 1
+          fi
+          tag="v$VERSION"; major="v${BASH_REMATCH[1]}"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::$tag already exists"; exit 1
+          fi
+          last=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+          if [ -n "$last" ] && [ "$(printf '%s\n%s\n' "$last" "$tag" | sort -V | tail -n 1)" != "$tag" ]; then
+            echo "::error::$tag must be greater than the last release, $last"; exit 1
+          fi
+          echo "last release: ${last:-none}; new: $tag on $(git rev-parse --short=12 HEAD); moves $major"
+          { echo "tag=$tag"; echo "major=$major"; } >> "$GITHUB_OUTPUT"
+      - name: Run the fixtures
+        run: bash test/fixtures.sh "" "$RUNNER_TEMP/fx"
+      - name: Tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          MAJOR: ${{ steps.version.outputs.major }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "[dry-run] would tag $TAG on ${sha:0:12} and move $MAJOR to it"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag --annotate "$TAG" "$sha" --message "release-kit $TAG"
+          git push origin "refs/tags/$TAG"
+          git tag --force --annotate "$MAJOR" "$sha" --message "release-kit $MAJOR (now $TAG)"
+          git push --force origin "refs/tags/$MAJOR"
+          echo "✓ $TAG on ${sha:0:12}; $MAJOR moved to it"
