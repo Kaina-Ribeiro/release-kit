@@ -7,9 +7,9 @@ values. `RELEASING.md` holds the rules it enforces; it is copied into each repos
 
 | File | Installed as | Does |
 |:--|:--|:--|
-| `release.mjs` | not installed: the kit's workflows run it at the pinned version | `rc`, `final`, `sync`, `cleanup`, `cut-release`, `cut-hotfix`, `deploy` (fails unless each app stays up), `deploy-check`; `--dry-run` |
+| `release.mjs` | not installed: the kit's workflows run it at the pinned version | `rc`, `final`, `sync`, `cleanup`, `cut-release`, `cut-hotfix`, `deploy` (fails unless each app stays up), `deploy-check`, `report` (failure issues); `--dry-run` |
 | `.github/workflows/release.yml`, `pr-checks.yml` | not installed: reusable workflows (`on: workflow_call`) | The jobs below; each checks out the calling repository and this kit at `job.workflow_sha` |
-| `workflows/release.yml` | `.github/workflows/release.yml` | Caller of the kit's `release.yml@v1` (passes vars and secrets): rc + sync + test-stage deploy on push to a version line (none for a commit already tagged, e.g. a cut), branch cleanup on merge into a version line, final on merge into the default branch (plus a sync PR from the default branch into the next open release), cuts and deploys on dispatch |
+| `workflows/release.yml` | `.github/workflows/release.yml` | Caller of the kit's `release.yml@v1` (passes vars and secrets): rc + sync + test-stage deploy on push to a version line (none for a commit already tagged, e.g. a cut), branch cleanup on merge into a version line, final on merge into the default branch (plus a sync PR from the default branch into the next open release), cuts and deploys on dispatch; an issue per failing automatic job and line, closed by its next success |
 | `workflows/pr-checks.yml` | `.github/workflows/pr-checks.yml` | Caller of the kit's `pr-checks.yml@v1`: required checks `pr-checks / checks` (install, lint, typecheck) and `pr-checks / conventions` (branch name, PR title, target) |
 | `rulesets/*.json` | GitHub settings | Default branch, version lines and `v*` tags |
 | `RELEASING.md` | `RELEASING.md` | The rules, for the people working on the repository |

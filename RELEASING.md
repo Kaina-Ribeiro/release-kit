@@ -159,6 +159,19 @@ roll back by deploying the previous tag.
 - **`rc` refused, "already shipped"**: that release line is done. Fixes for prod go through
   `cut-hotfix`; new work goes to the next release.
 
+## When the automation fails
+
+- When an automatic job (`rc`, `deploy-test`, `final`, `cleanup`) fails, the Release run's
+  `report` job opens an issue `Release automation failing: <job> on <line>` (label
+  `release-kit`) with the run link and the error. Manual runs (`deploy`, cuts) open none.
+- The next failure of the same job on the same line comments on that issue; it never opens a
+  second one. The next success of that job on that line comments `Fixed by <run>` and closes it.
+  A success on another line or job leaves it open.
+- To act: read the error, find it under "When the automation refuses" above, fix the cause, then
+  re-run the failed job (or push to the line). Do not close the issue by hand while the job still
+  fails: the next failure would open a new one.
+- If the `report` job cannot reach GitHub, it only warns: the failed job stays red either way.
+
 ## Setup
 
 Files: `.github/workflows/release.yml` and `.github/workflows/pr-checks.yml` (short callers of
