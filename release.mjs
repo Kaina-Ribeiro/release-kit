@@ -3,19 +3,24 @@
 // Zero dependencies, Node 18+. Installed into a repo as .github/scripts/release.mjs.
 //
 //   rc           tag vX.Y.Z-rc on a push to release/vX.Y or hotfix/vX.Y, plus a prerelease;
-//                skips a commit that already has a release tag (a cut: no new code);
-//                every new candidate takes the next patch (v0.2.0-rc, v0.2.1-rc, …)
-//   sync         open "chore(sync): merge A into B" into the next open release line
+//                skips a commit that already has a final or an older line's rc (a cut: no new code);
+//                every new candidate takes the next patch (v0.2.0-rc, v0.2.1-rc, …); rc and final
+//                re-runs on an already-tagged commit create the GitHub release if it is missing
+//   sync        open "chore(sync): merge A into B" into the next open release line
 //   final        tag the line's last rc as final (v0.2.1-rc → v0.2.1) on the merge of a version line
 //                into the default branch, plus a release; refuses when prod does not run that rc
-//                (if DEPLOY_PROD_APPS is set); then deletes the shipped line's branch
-//   cut-release  create the next release/vX.Y from the newest open release (or the default branch)
+//                (if DEPLOY_PROD_APPS is set); then opens "chore(sync): merge <default> into <release>"
+//                if the next open release lacks the default branch, comments on the PRs still open
+//                from the shipped line, and deletes its branch
+//   cut-release  create the next release/vX.Y from the newest open release (or the default branch);
+//                refuses while that release's head has no rc yet
 //   cut-hotfix   create hotfix/vX.Y from the final tag in prod
 //   conventions  check a PR's branch name, title and target (used by the PR checks workflow)
 //   cleanup      delete a feature/fix branch once its PR is merged into a version line
 //                (version lines and the default branch are never deleted here)
 //   deploy-check gate a deploy: any release tag for test stages; --prod only for the last rc of an
-//                open line, or a final whose code equals its rc (rollback)
+//                open line that contains the default branch, or a final whose code equals its rc
+//                (rollback)
 //   deploy       deploy a release tag to the test or prod apps on Cubeship (passes deploy-check first),
 //                then fail unless each app's container comes up and stays up (see waitForHealthy)
 //   status       print the release state of the repo (read-only)
@@ -24,7 +29,8 @@
 //        --title, --base, --prod, --stage, --apps. Env: DEFAULT_BRANCH, GITHUB_REPOSITORY,
 //        GH_TOKEN/GITHUB_TOKEN, TICKET_PATTERN, PR_TITLE, HEAD_REF, BASE_REF, HEAD_SHA,
 //        CUBESHIP_URL, CUBESHIP_TOKEN, DEPLOY_TEST_APPS, DEPLOY_PROD_APPS,
-//        RELEASE_HEALTH_STABLE_S, RELEASE_HEALTH_WAIT_S.
+//        RELEASE_HEALTH_STABLE_S, RELEASE_HEALTH_WAIT_S, GITHUB_REF_TYPE + GITHUB_REF_NAME (a
+//        deploy with no tag takes the tag or the line the run starts from).
 
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -77,8 +83,13 @@ function output(key, value) {
 
 // ---------- git ----------
 
+// A failing git command reads as git's own message, not a Node stack.
 function git(...args) {
-  return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  } catch (err) {
+    throw new Failure(`git ${args.join(' ')} failed: ${err.stderr?.toString().trim() || err.message}`);
+  }
 }
 function gitOk(...args) {
   try { git(...args); return true; } catch { return false; }
@@ -136,7 +147,10 @@ const fmtRc = (major, minor, patch) => `${fmt(major, minor, patch)}-rc`;
 let stateCache;
 function state() {
   if (stateCache) return stateCache;
-  if (!opts['no-fetch']) git('fetch', 'origin', '--tags', '--prune', '--quiet');
+  // --force: a tag checkout can leave a local copy of a tag that differs from the remote's (a
+  // lightweight one where the remote has an annotated tag), and a plain fetch refuses to replace
+  // it. The remote is the truth: only the automation creates tags.
+  if (!opts['no-fetch']) git('fetch', 'origin', '--tags', '--prune', '--force');
   const tags = lines(git('tag', '--list', 'v*')).map(parseTag).filter(Boolean).sort(cmpTag);
   const branches = lines(git('for-each-ref', '--format=%(refname:strip=3)',
     'refs/remotes/origin/release', 'refs/remotes/origin/hotfix')).map(parseLine).filter(Boolean).sort(cmpLine);
@@ -176,6 +190,13 @@ function checkLine(branch) {
   return line;
 }
 
+// The branch of a tag's X.Y line: the hotfix once X.Y shipped, else the release.
+function lineOf(tag) {
+  const same = state().branches.filter((b) => b.major === tag.major && b.minor === tag.minor);
+  const kind = finalsOf(tag.major, tag.minor).length ? 'hotfix' : 'release';
+  return (same.find((b) => b.kind === kind) ?? same[0])?.name ?? `the v${tag.major}.${tag.minor} line`;
+}
+
 // Highest final tag contained in the default branch: what is in prod.
 function prodTag() {
   const head = remoteRef(defaultBranch());
@@ -194,22 +215,29 @@ function repoSlug() {
 }
 const token = () => process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
 
-async function api(method, path, body) {
+// missingOk: a 404 answers null instead of failing (looking something up).
+async function api(method, path, body, { missingOk = false } = {}) {
   const slug = repoSlug();
   if (!slug) fail('cannot tell the GitHub repository; set GITHUB_REPOSITORY=owner/name');
   if (!token()) fail('GitHub API needs GH_TOKEN or GITHUB_TOKEN');
   const base = process.env.GITHUB_API_URL || 'https://api.github.com';
-  const res = await fetch(`${base}/repos/${slug}${path}`, {
-    method,
-    headers: {
-      accept: 'application/vnd.github+json',
-      authorization: `Bearer ${token()}`,
-      'x-github-api-version': '2022-11-28',
-      ...(body ? { 'content-type': 'application/json' } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(`${base}/repos/${slug}${path}`, {
+      method,
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${token()}`,
+        'x-github-api-version': '2022-11-28',
+        ...(body ? { 'content-type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) { // GitHub unreachable: a message, not a Node stack
+    fail(`GitHub API ${method} ${path}: ${err.cause?.code || err.cause?.message || err.message}`);
+  }
   const text = await res.text();
+  if (missingOk && res.status === 404) return null;
   if (!res.ok) fail(`GitHub API ${method} ${path}: ${res.status} ${text.slice(0, 300)}`);
   return text ? JSON.parse(text) : null;
 }
@@ -236,7 +264,7 @@ function deleteBranch(name) {
   act(`delete branch ${name}`);
   if (dryRun) return;
   try { git('push', 'origin', '--delete', name); } catch (err) {
-    warn(`could not delete ${name} (${err.stderr?.toString().trim() || err.message}); delete it by hand`);
+    warn(`could not delete ${name} (${err.message}); delete it by hand`);
   }
 }
 
@@ -252,18 +280,32 @@ async function createRelease(tag, sha, previous, prerelease) {
   });
 }
 
+// The GitHub release of a tag that is already out. A run that pushed the tag and then failed to
+// create the release (a GitHub error) leaves it missing, and its re-run only lands on "already";
+// so the re-run creates it. Unlike the steps after a ship, an API error here fails the job: a
+// missing release must show.
+async function ensureRelease(tag, sha, previous, prerelease) {
+  if (dryRun && !token()) { log(`  (no GitHub token: skipping the check for the ${tag} release)`); return; }
+  if (await api('GET', `/releases/tags/${encodeURIComponent(tag)}`, undefined, { missingOk: true })) {
+    log(`✓ release ${tag} already exists`);
+    return;
+  }
+  await createRelease(tag, sha, previous, prerelease);
+}
+
+// The sync PR's number (the open one, or the one it opens); null under --dry-run.
 async function openSyncPr(source, target) {
   const title = `chore(sync): merge ${source} into ${target}`;
   const owner = (repoSlug() ?? '').split('/')[0];
   if (token() && owner) {
     const open = await api('GET', `/pulls?state=open&head=${owner}:${encodeURIComponent(source)}`
       + `&base=${encodeURIComponent(target)}`);
-    if (open.length) { log(`✓ sync PR already open: #${open[0].number} ${title}`); return; }
+    if (open.length) { log(`✓ sync PR already open: #${open[0].number} ${title}`); return open[0].number; }
   } else if (dryRun) {
     log('  (no GitHub token: skipping the check for an already-open sync PR)');
   }
   act(`open PR "${title}"`);
-  if (dryRun) return;
+  if (dryRun) return null;
   const pr = await api('POST', '/pulls', {
     title, head: source, base: target,
     body: [
@@ -274,6 +316,56 @@ async function openSyncPr(source, target) {
     ].join('\n'),
   });
   log(`✓ opened #${pr.number}`);
+  return pr.number;
+}
+
+// Comments on each open PR whose head is `head` (GitHub closes them once that branch is deleted).
+async function commentOnOpenPrs(head, body) {
+  const owner = (repoSlug() ?? '').split('/')[0];
+  if (dryRun && !(token() && owner)) {
+    log(`  (no GitHub token: skipping the check for open PRs from ${head})`);
+    act(`comment on open PRs from ${head}: "${body}"`);
+    return;
+  }
+  if (!owner) fail('cannot tell the GitHub repository; set GITHUB_REPOSITORY=owner/name');
+  const open = await api('GET', `/pulls?state=open&head=${owner}:${encodeURIComponent(head)}`);
+  if (!open.length) { log(`✓ no open PRs from ${head}`); return; }
+  act(`comment on open PRs from ${head}: "${body}"`);
+  if (dryRun) { log(`  (open: ${open.map((p) => `#${p.number}`).join(', ')})`); return; }
+  for (const pr of open) {
+    await api('POST', `/issues/${pr.number}/comments`, { body });
+    log(`✓ commented on #${pr.number}`);
+  }
+}
+
+// After a line ships, before its branch goes: the next open release must get the default branch
+// (now holding the shipped line), and the PRs still open from the shipped branch, which GitHub
+// closes with it, say where their changes went. The final tag is already out, so a GitHub error
+// here is a warning, never a failure.
+async function afterShip(head, tag, sha) {
+  const def = defaultBranch();
+  // The state was read before the tag, so `head` may still look open.
+  const next = openReleases().find((r) => r.name !== head);
+  let pr = null; // null under --dry-run, where the PR only would be opened
+  let synced = true;
+  let refused = false;
+  if (next && !isAncestor(sha, remoteRef(next.name))) {
+    synced = false;
+    try { pr = await openSyncPr(def, next.name); } catch (err) {
+      refused = true;
+      warn(`could not open the sync PR from ${def} into ${next.name} (${err.cause?.code || err.message}); open it by hand`);
+    }
+  }
+  // The comment stays on the closed PRs, so it never points at a sync PR that does not exist.
+  const where = !next ? `its changes are in ${def}.`
+    : synced ? `its changes are already in ${next.name}.`
+      : refused ? `its changes are in ${def} but no sync PR into ${next.name} could be opened: `
+        + `open one (merge ${def} into ${next.name}).`
+        : `its changes reach ${next.name} through ${pr ? `#${pr}` : 'the sync PR'}.`;
+  try { await commentOnOpenPrs(head, `Closed because ${head} shipped as ${tag}; ${where}`); } catch (err) {
+    warn(`could not comment on the open PRs from ${head} (${err.cause?.code || err.message})`);
+  }
+  deleteBranch(head);
 }
 
 // ---------- Cubeship (deploys) ----------
@@ -465,6 +557,10 @@ const shaOf = (branch) => opts.sha || process.env.GITHUB_SHA || commitOf(branchE
 
 // Release tags (final or rc, any line) on a commit.
 const releaseTagsOn = (sha) => state().tags.filter((t) => commitOf(t.name) === sha);
+// Tags on a commit that mean "no new code" for `line`: a final, or an rc of an older line (what a
+// cut starts from). A newer line's rc does not: cut from this line's head, it may tag that commit
+// before this line's own rc job runs.
+const blockingTagsOn = (sha, line) => releaseTagsOn(sha).filter((t) => t.rc === null || cmpLine(t, line) < 0);
 
 // Step output `tag`: this line's rc on the pushed commit, empty when there is none, so the
 // test-stage deploy runs only for a commit that is (or already was) this line's candidate.
@@ -476,12 +572,16 @@ async function cmdRc() {
   const already = rcs.find((r) => commitOf(r.name) === sha);
   if (already) {
     log(`✓ ${sha.slice(0, 12)} is already ${already.name}; nothing to do`);
+    // A re-run of a job that tagged and then failed: notes since the rc before it, as the first run.
+    const before = rcs[rcs.indexOf(already) - 1]?.name
+      ?? finals().filter((f) => cmpTag(f, already) < 0).at(-1)?.name;
+    await ensureRelease(already.name, sha, before, true);
     output('tag', already.name);
     return;
   }
   // A commit that already carries a release tag has no new code: a cut (release from an open
   // release, hotfix from the final in prod) pushes such a commit, and it must not become an rc.
-  const tagged = releaseTagsOn(sha).map((t) => t.name);
+  const tagged = blockingTagsOn(sha, line).map((t) => t.name);
   if (tagged.length) {
     log(`✓ ${sha.slice(0, 12)} is already ${tagged.join(', ')}: no new code on ${branch}, no rc; `
       + 'the first change merged into it takes one');
@@ -525,7 +625,9 @@ async function cmdFinal() {
   const shipped = finalsOf(line.major, line.minor).at(-1);
   if (shipped && commitOf(shipped.name) === sha) {
     log(`✓ ${shipped.name} already on ${sha.slice(0, 12)}`);
-    deleteBranch(head);
+    const before = finals().filter((f) => cmpTag(f, shipped) < 0).at(-1)?.name;
+    await ensureRelease(shipped.name, sha, before, false);
+    await afterShip(head, shipped.name, sha);
     return;
   }
   checkLine(head);
@@ -546,7 +648,7 @@ async function cmdFinal() {
   log(`${head} merged into ${def} → ${tag} (same code as ${lastRc.name})`);
   createTag(tag, sha, `Release ${tag} (from ${head}, same code as ${lastRc.name})`);
   await createRelease(tag, sha, previous, false);
-  deleteBranch(head);
+  await afterShip(head, tag, sha);
   outcome(`Shipped **${tag}** from \`${head}\` (same code as ${lastRc.name})`,
     `ship **${tag}** from \`${head}\` (same code as ${lastRc.name})`);
 }
@@ -592,6 +694,15 @@ async function cmdCutRelease() {
   if (branchExists(branch)) fail(`${branch} already exists`);
   if (finalsOf(major, minor).length) fail(`v${major}.${minor} already shipped`);
   const from = newest ? newest.name : defaultBranch();
+  // A cut at a head with no rc yet would race that head's own rc: the new line's rc job can tag the
+  // commit first, and the older line then sees no new code and never gets its rc.
+  if (newest) {
+    const head = commitOf(remoteRef(newest.name));
+    if (!releaseTagsOn(head).length) {
+      fail(`${newest.name}'s head ${head.slice(0, 12)} has no rc yet (its Release run may still be running); `
+        + 'wait for it, then cut again.');
+    }
+  }
   log(`open releases: ${open.map((r) => r.name).join(', ') || 'none'}; latest shipped: ${shipped?.name ?? 'none'}`);
   log(`${branch} branches from ${from}; its first rc will be ${fmtRc(major, minor, 0)}`);
   createBranch(branch, commitOf(remoteRef(from)));
@@ -627,8 +738,13 @@ function cmdConventions() {
   const headLine = parseLine(head);
   const githubRevert = /^revert-\d+-/.test(head) && /^Revert ".+"$/.test(title);
   if (headLine) {
-    if (base !== def && !parseLine(base)) {
+    const baseLine = parseLine(base);
+    if (base !== def && !baseLine) {
       errors.push(`${head} can only merge into ${def} or another version line, not "${base}"`);
+    }
+    // Changes flow forward only: an older line's fixes reach newer lines, never the reverse.
+    if (baseLine && cmpLine(baseLine, headLine) <= 0) {
+      errors.push(`${head} can merge only into ${def} or a newer line; ${base} is older.`);
     }
     if (!new RegExp(`^(${types})(\\([^)]+\\))?!?: \\S`).test(title)) {
       errors.push(`title "${title}" is not Conventional Commits, e.g. "chore(release): ship ${head}"`);
@@ -638,6 +754,11 @@ function cmdConventions() {
       if (!isAncestor(remoteRef(def), headSha)) {
         errors.push(`${head} is behind ${def}: merge ${def} into ${head} first, so ${def} ships exactly a tested rc`);
       }
+    }
+  } else if (head === def && parseLine(base)) {
+    // A sync PR that brings what shipped (the default branch) into an open line.
+    if (!new RegExp(`^(${types})(\\([^)]+\\))?!?: \\S`).test(title)) {
+      errors.push(`title "${title}" is not Conventional Commits, e.g. "chore(sync): merge ${def} into ${base}"`);
     }
   } else {
     if (base === def) errors.push(`only release/vX.Y or hotfix/vX.Y can merge into ${def}; target a release line`);
@@ -676,6 +797,16 @@ function checkDeploy(name, prod) {
       fail(`${name} is not the last rc of an open v${tag.major}.${tag.minor} line`
         + `${last ? ` (that is ${last.name})` : ''}; prod takes only the line's last rc or a final`);
     }
+    // The default branch is what prod runs (e.g. a hotfix shipped meanwhile); an rc without it
+    // would take that away from prod. Once the line itself merged into the default branch (release
+    // day, prod deployed after the merge), that merge commit is not in the rc but its code is the
+    // rc's code, so nothing is lost.
+    const def = defaultBranch();
+    if (!isAncestor(remoteRef(def), name) && treeOf(remoteRef(def)) !== treeOf(name)) {
+      fail(`${name} lacks what ${def} has (${def} at ${commitOf(remoteRef(def)).slice(0, 12)}, `
+        + `prod ${prodTag()?.name ?? 'nothing'}): prod would lose it. `
+        + `Merge the open sync PR (or ${def}) into ${lineOf(tag)}, then deploy the new rc.`);
+    }
     log(`✓ ${name} can go to prod (last rc of v${tag.major}.${tag.minor}; the merge will tag it ${fmt(tag.major, tag.minor, tag.patch)})`);
     return tag;
   }
@@ -705,14 +836,33 @@ function cmdDeployCheck() {
   checkDeploy(name, Boolean(opts.prod));
 }
 
-// Without a tag: the last rc of --branch, else of the newest open release line. For a test stage, a
-// --branch with no rc yet (a fresh cut, which takes no rc until new code lands) gives null.
+// Lines that can still take a deploy: release/* not shipped yet and every hotfix/*, in line order.
+const openLines = () => state().branches.filter((b) => b.kind === 'hotfix' || finalsOf(b.major, b.minor).length === 0);
+const lastRcOf = (line) => pendingRcs(line.major, line.minor).at(-1);
+
+// Without a tag, by what the run starts from: --branch (the rc job's test deploy), else the run's
+// ref (a tag deploys that tag; a line deploys its last rc), else the only open line. For a test
+// stage, a --branch with no rc yet (a fresh cut, which takes no rc until new code lands) gives null.
 function defaultDeployTag(stage) {
-  const line = opts.branch ? parseLine(opts.branch) : openReleases().at(-1);
-  if (!line) fail(opts.branch ? `"${opts.branch}" is not a version line` : 'no open release line; pass the tag to deploy');
-  const last = pendingRcs(line.major, line.minor).at(-1);
-  if (!last && opts.branch && stage === 'test') return null;
-  if (!last) fail(`${line.name} has no rc to deploy`);
+  if (opts.branch) {
+    const line = parseLine(opts.branch);
+    if (!line) fail(`"${opts.branch}" is not a version line`);
+    const last = lastRcOf(line);
+    if (!last && stage === 'test') return null;
+    if (!last) fail(`${line.name} has no rc to deploy`);
+    return last.name;
+  }
+  const refName = process.env.GITHUB_REF_NAME;
+  if (process.env.GITHUB_REF_TYPE === 'tag' && refName) return refName;
+  const ref = parseLine(refName);
+  const open = ref ? [ref] : openLines();
+  if (open.length > 1) {
+    const list = open.map((l) => `${l.name}: ${lastRcOf(l)?.name ?? 'no rc'}`).join(', ');
+    fail(`${open.length} lines are open (${list}); pass the tag or run from the line's branch`);
+  }
+  if (!open.length) fail('no open line; pass the tag to deploy');
+  const last = lastRcOf(open[0]);
+  if (!last) fail(`${open[0].name} has no rc to deploy`);
   return last.name;
 }
 

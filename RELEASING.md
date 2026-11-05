@@ -22,7 +22,10 @@ How code moves from a pull request to production in this repository. The automat
   lowercase, e.g. `feat(ABC-12): add login`. The ticket must match the branch.
 - Types: `feat`, `fix`, `chore`, `refactor`, `perf`, `docs`, `test`, `ci`, `build`, `revert`.
 - PRs from a version line (release day, hotfix, sync) take any Conventional Commits title,
-  e.g. `chore(release): ship release/v0.2`.
+  e.g. `chore(release): ship release/v0.2`. So do sync PRs from the default branch into a
+  version line, e.g. `chore(sync): merge main into release/v0.3`.
+- A version line merges only into the default branch or a newer line (`hotfix/v0.2` →
+  `release/v0.3`, never `release/v0.3` → `hotfix/v0.2`).
 - GitHub "Revert" PRs (`revert-123-…`, `Revert "…"`) are accepted as they come.
 
 ## Procedures
@@ -36,25 +39,35 @@ How code moves from a pull request to production in this repository. The automat
    Reapply it in the next release by reverting the revert.
 3. **New release**: Actions → Release → Run workflow → `cut-release`. It branches from the
    newest open release, or from the default branch if none is open. Never create `release/*`
-   by hand. `version` forces a line such as `1.0` for a major bump. A fresh line has no new
-   code, so it gets no rc (and no test deploy) until the first PR merges into it: a commit that
-   already carries a release tag (final or rc, any line) never becomes an rc.
+   by hand. `version` forces a line such as `1.0` for a major bump. Cut only after the newest
+   open release's last push got its rc: until then `cut-release` refuses (its Release run may
+   still be running), so the older line never loses that rc. A fresh line has no new code, so it
+   gets no rc (and no test deploy) until the first PR merges into it: a commit that already
+   carries a final or an older line's rc never becomes an rc.
 4. **Release day**: prod gets the rc you tested, then the merge only records it.
-   1. Test the line's last rc on the test stage.
+   1. Merge any open sync PR into the release first (it brings what prod already has, such as a
+      shipped hotfix; prod refuses an rc without it). Then test the line's last rc on the test stage.
    2. Actions → Release → Run workflow, **from the release branch** → `deploy`, stage `prod`,
-      tag empty (= the newest open release's last rc). Without deploys configured, deploy that rc
-      with your own tool after `deploy-check <rc> --prod`.
+      tag empty (= that branch's last rc). Without deploys configured, deploy that rc with your
+      own tool after `deploy-check <rc> --prod`.
    3. PR `release/vX.Y` → default branch, **merge commit** (never squash or rebase). The release
       must contain the default branch first (the `conventions` check says so). The merge tags
       that rc's version as final (`v0.2.2-rc` → `v0.2.2`) with release notes, without deploying
-      again, and deletes the shipped branch.
+      again, and deletes the shipped branch. Before deleting it, if the next open release lacks
+      the default branch, it opens `chore(sync): merge <default> into release/vX.Y` (merge it
+      before that release's own release day), and it comments on each PR still open from the
+      shipped branch, which GitHub closes with the branch, saying where its changes went.
 5. **Hotfix**: Actions → Release → `cut-hotfix` (branches from the final tag in prod; if the
    branch already exists it is reused; it gets its first rc with the first fix, never at the
    final tag itself). Fix PRs into `hotfix/vX.Y` (squash) → test the rc →
-   `deploy` to prod with that rc's tag → PR into the default branch (merge commit) → the last
-   rc's `vX.Y.Z`, and the branch is deleted.
+   `deploy` to prod, **run from `hotfix/vX.Y`** with the tag empty (= its last rc) → PR into the
+   default branch (merge commit) → the last rc's `vX.Y.Z`, the sync PR from the default branch
+   into the open release (as in 4.3), and the branch is deleted.
 6. **Sync PRs** (`chore(sync): merge A into B`, opened automatically): review and merge with a
-   **merge commit**. On conflicts, resolve on a branch cut from the target, never on the source.
+   **merge commit**. There are two kinds: from a version line into the next open release (on
+   each push to the line), and from the default branch into the first open release (after each
+   ship, `chore(sync): merge <default> into release/vX.Y`). On conflicts, resolve on a branch cut
+   from the target, never on the source.
 
 ## Deploys
 
@@ -63,15 +76,20 @@ pointing back at the previous tag.
 
 - Test stage: any `vX.Y.Z-rc` or `vX.Y.Z`, any time. Each new rc deploys there by itself; a
   push that makes no rc (a cut) deploys nothing.
-- Prod: the last rc of an open line (release day, before the merge), or a final `vX.Y.Z` whose
-  code equals its rc (rollback). An older rc is refused.
+- Prod: the last rc of an open line **that contains the default branch** (release day, before
+  the merge), or a final `vX.Y.Z` whose code equals its rc (rollback). An older rc is refused, and
+  so is an rc that lacks something the default branch has (e.g. a hotfix shipped meanwhile): prod
+  would lose it. Merge the open sync PR (or the default branch) into the line, then deploy the new rc.
 - The `final` tag is created only if prod already runs the line's last rc (when prod deploys
   are configured), so a final always names what prod runs.
 
 `node .github/scripts/release.mjs deploy-check <tag> [--prod]` exits non-zero when a deploy
 breaks these rules; call it from any other deploy tool. `deploy <tag> --stage test|prod` runs it,
 then points each app at the tag and deploys it on Cubeship, in order, waiting for each.
-Actions → Release → `deploy` is the same as a button (also for rollback).
+Actions → Release → `deploy` is the same as a button (also for rollback). With the tag empty it
+deploys the last rc of the line you run it from (`release/vX.Y` or `hotfix/vX.Y`), or the tag
+you run it from. Run from the default branch, it takes the only open line's last rc and refuses
+when more than one line is open (a hotfix and a release): run it from the line's branch instead.
 
 **A deploy is green only if the app stays up.** Cubeship calls a deploy "succeeded" as soon as
 it starts the new container, even when the process dies a second later (a missing env var, a
@@ -94,13 +112,24 @@ roll back by deploying the previous tag.
 ## When the automation refuses
 
 - **`final` refused, "differs from vX.Y.Z-rc"**: the default branch had changes the release
-  did not. Nothing was tagged. Merge the default branch into the version line with a PR (new rc),
-  then PR the line into the default branch again.
+  did not. Nothing was tagged. Merge the sync PR from the default branch
+  (`chore(sync): merge <default> into <line>`, or open one) into the version line (new rc), then
+  PR the line into the default branch again.
+- **`deploy` refused, "lacks what <default> has"**: the rc misses something prod already runs
+  (e.g. a hotfix shipped after the rc). Merge the open sync PR from the default branch into the
+  line, then deploy the new rc.
+- **`deploy` refused, "N lines are open"**: the run started from the default branch with the tag
+  empty, and more than one line could be meant. Run it from the line's branch, or pass the tag.
+- **`cut-release` refused, "has no rc yet"**: the newest release's last push is still being
+  tagged. Wait for its Release run, then cut again.
 - **`final` refused, "no rc"**: the line was never tagged as a candidate. Push a change to the
   line (or re-run its last Release run) so it gets an rc, then merge again.
 - **`final` refused, "prod does not run vX.Y.Z-rc"**: the release was merged before prod got its
   last rc. Nothing was tagged and the branch stays. Run `deploy` to prod with that rc, then
   re-run the failed `final` job.
+- **`rc` or `final` failed after pushing the tag** (e.g. GitHub could not create the release):
+  re-run the failed job. The re-run sees the tag, creates the missing release or prerelease, and
+  finishes what the first run left (for `final`: the sync PR, the comments, the branch delete).
 - **`rc` refused, "already shipped"**: that release line is done. Fixes for prod go through
   `cut-hotfix`; new work goes to the next release.
 

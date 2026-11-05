@@ -1,0 +1,25 @@
+# The kit's own tests: runs release.mjs through test/fixtures.sh on a throwaway repo.
+# Not installed into repositories (install.sh copies from workflows/, not from here).
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          package-manager-cache: false
+      - name: Run the fixtures
+        run: bash test/fixtures.sh "" "$RUNNER_TEMP/fx"
