@@ -635,8 +635,13 @@ function cmdConventions() {
   const headLine = parseLine(head);
   const githubRevert = /^revert-\d+-/.test(head) && /^Revert ".+"$/.test(title);
   if (headLine) {
-    if (base !== def && !parseLine(base)) {
+    const baseLine = parseLine(base);
+    if (base !== def && !baseLine) {
       errors.push(`${head} can only merge into ${def} or another version line, not "${base}"`);
+    }
+    // Changes flow forward only: an older line's fixes reach newer lines, never the reverse.
+    if (baseLine && cmpLine(baseLine, headLine) <= 0) {
+      errors.push(`${head} can merge only into ${def} or a newer line; ${base} is older.`);
     }
     if (!new RegExp(`^(${types})(\\([^)]+\\))?!?: \\S`).test(title)) {
       errors.push(`title "${title}" is not Conventional Commits, e.g. "chore(release): ship ${head}"`);

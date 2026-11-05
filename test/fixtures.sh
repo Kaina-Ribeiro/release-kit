@@ -117,6 +117,7 @@ expect fail conventions --head feat/ABC-3-login --base release/v0.2 --title "fea
 expect ok conventions --head revert-12-feat/ABC-3-login --base release/v0.2 --title 'Revert "feat(ABC-3): add login"'
 expect ok conventions --head release/v0.2 --base release/v0.3 --title "chore(sync): merge release/v0.2 into release/v0.3"
 expect ok conventions --head release/v0.2 --base "$def" --title "chore(release): ship release/v0.2"
+expect_out fail "release/v0.3 can merge only into $def or a newer line; release/v0.2 is older." conventions --head release/v0.3 --base release/v0.2 --title "chore(sync): merge release/v0.3 into release/v0.2"
 
 echo; echo "=== 3b. merged feature branches are deleted; version lines are kept"
 branch feat/ABC-3-login origin/release/v0.2
@@ -139,6 +140,8 @@ echo; echo "=== 5. hotfix on v0.2"
 expect ok cut-release --dry-run
 expect_out ok "in prod: v0.2.2; the hotfix's next rc will be v0.2.3-rc" cut-hotfix --dry-run
 branch hotfix/v0.2 v0.2.2
+expect_out fail "is older" conventions --head release/v0.3 --base hotfix/v0.2 --title "chore(sync): merge release/v0.3 into hotfix/v0.2"
+expect ok conventions --head hotfix/v0.2 --base release/v0.3 --title "chore(sync): merge hotfix/v0.2 into release/v0.3"
 expect ok rc --branch hotfix/v0.2 --dry-run
 commit_on hotfix/v0.2 "fix(ABC-6): prod bug"
 expect ok rc --branch hotfix/v0.2 --dry-run

@@ -23,6 +23,8 @@ How code moves from a pull request to production in this repository. The automat
 - Types: `feat`, `fix`, `chore`, `refactor`, `perf`, `docs`, `test`, `ci`, `build`, `revert`.
 - PRs from a version line (release day, hotfix, sync) take any Conventional Commits title,
   e.g. `chore(release): ship release/v0.2`.
+- A version line merges only into the default branch or a newer line (`hotfix/v0.2` →
+  `release/v0.3`, never `release/v0.3` → `hotfix/v0.2`).
 - GitHub "Revert" PRs (`revert-123-…`, `Revert "…"`) are accepted as they come.
 
 ## Procedures
