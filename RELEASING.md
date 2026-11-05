@@ -38,9 +38,11 @@ How code moves from a pull request to production in this repository. The automat
    Reapply it in the next release by reverting the revert.
 3. **New release**: Actions → Release → Run workflow → `cut-release`. It branches from the
    newest open release, or from the default branch if none is open. Never create `release/*`
-   by hand. `version` forces a line such as `1.0` for a major bump. A fresh line has no new
-   code, so it gets no rc (and no test deploy) until the first PR merges into it: a commit that
-   already carries a release tag (final or rc, any line) never becomes an rc.
+   by hand. `version` forces a line such as `1.0` for a major bump. Cut only after the newest
+   open release's last push got its rc: until then `cut-release` refuses (its Release run may
+   still be running), so the older line never loses that rc. A fresh line has no new code, so it
+   gets no rc (and no test deploy) until the first PR merges into it: a commit that already
+   carries a final or an older line's rc never becomes an rc.
 4. **Release day**: prod gets the rc you tested, then the merge only records it.
    1. Merge any open sync PR into the release first (it brings what prod already has, such as a
       shipped hotfix; prod refuses an rc without it). Then test the line's last rc on the test stage.

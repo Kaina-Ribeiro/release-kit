@@ -3,13 +3,14 @@
 // Zero dependencies, Node 18+. Installed into a repo as .github/scripts/release.mjs.
 //
 //   rc           tag vX.Y.Z-rc on a push to release/vX.Y or hotfix/vX.Y, plus a prerelease;
-//                skips a commit that already has a release tag (a cut: no new code);
+//                skips a commit that already has a final or an older line's rc (a cut: no new code);
 //                every new candidate takes the next patch (v0.2.0-rc, v0.2.1-rc, …)
 //   sync         open "chore(sync): merge A into B" into the next open release line
 //   final        tag the line's last rc as final (v0.2.1-rc → v0.2.1) on the merge of a version line
 //                into the default branch, plus a release; refuses when prod does not run that rc
 //                (if DEPLOY_PROD_APPS is set); then deletes the shipped line's branch
-//   cut-release  create the next release/vX.Y from the newest open release (or the default branch)
+//   cut-release  create the next release/vX.Y from the newest open release (or the default branch);
+//                refuses while that release's head has no rc yet
 //   cut-hotfix   create hotfix/vX.Y from the final tag in prod
 //   conventions  check a PR's branch name, title and target (used by the PR checks workflow)
 //   cleanup      delete a feature/fix branch once its PR is merged into a version line
@@ -481,6 +482,10 @@ const shaOf = (branch) => opts.sha || process.env.GITHUB_SHA || commitOf(branchE
 
 // Release tags (final or rc, any line) on a commit.
 const releaseTagsOn = (sha) => state().tags.filter((t) => commitOf(t.name) === sha);
+// Tags on a commit that mean "no new code" for `line`: a final, or an rc of an older line (what a
+// cut starts from). A newer line's rc does not: cut from this line's head, it may tag that commit
+// before this line's own rc job runs.
+const blockingTagsOn = (sha, line) => releaseTagsOn(sha).filter((t) => t.rc === null || cmpLine(t, line) < 0);
 
 // Step output `tag`: this line's rc on the pushed commit, empty when there is none, so the
 // test-stage deploy runs only for a commit that is (or already was) this line's candidate.
@@ -497,7 +502,7 @@ async function cmdRc() {
   }
   // A commit that already carries a release tag has no new code: a cut (release from an open
   // release, hotfix from the final in prod) pushes such a commit, and it must not become an rc.
-  const tagged = releaseTagsOn(sha).map((t) => t.name);
+  const tagged = blockingTagsOn(sha, line).map((t) => t.name);
   if (tagged.length) {
     log(`✓ ${sha.slice(0, 12)} is already ${tagged.join(', ')}: no new code on ${branch}, no rc; `
       + 'the first change merged into it takes one');
@@ -608,6 +613,15 @@ async function cmdCutRelease() {
   if (branchExists(branch)) fail(`${branch} already exists`);
   if (finalsOf(major, minor).length) fail(`v${major}.${minor} already shipped`);
   const from = newest ? newest.name : defaultBranch();
+  // A cut at a head with no rc yet would race that head's own rc: the new line's rc job can tag the
+  // commit first, and the older line then sees no new code and never gets its rc.
+  if (newest) {
+    const head = commitOf(remoteRef(newest.name));
+    if (!releaseTagsOn(head).length) {
+      fail(`${newest.name}'s head ${head.slice(0, 12)} has no rc yet (its Release run may still be running); `
+        + 'wait for it, then cut again.');
+    }
+  }
   log(`open releases: ${open.map((r) => r.name).join(', ') || 'none'}; latest shipped: ${shipped?.name ?? 'none'}`);
   log(`${branch} branches from ${from}; its first rc will be ${fmtRc(major, minor, 0)}`);
   createBranch(branch, commitOf(remoteRef(from)));

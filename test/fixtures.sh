@@ -248,6 +248,17 @@ GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0-rc expect_out ok "deploying v0.2.0-rc
 GITHUB_REF_TYPE=branch GITHUB_REF_NAME="$def" expect_out fail "2 lines are open (hotfix/v0.1: v0.1.1-rc, release/v0.2: v0.2.0-rc)" deploy --stage prod --dry-run
 unset DEPLOY_PROD_APPS DEPLOY_TEST_APPS
 
+echo; echo "=== 14. B4: cutting a release does not take the rc of the line it is cut from"
+fresh b4
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): one"
+expect_out fail "release/v0.1's head" cut-release --dry-run
+tag v0.1.0-rc origin/release/v0.1
+expect ok cut-release --dry-run
+commit_on release/v0.1 "fix(ABC-2): late"
+branch release/v0.2 origin/release/v0.1
+tag v0.2.0-rc origin/release/v0.2
+expect_out ok "release/v0.1 → v0.1.1-rc" rc --branch release/v0.1 --dry-run
+
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
 echo "✓ all expectations met"
