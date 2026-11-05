@@ -270,7 +270,7 @@ expect_out ok "release/v0.1 → v0.1.1-rc" rc --branch release/v0.1 --dry-run
 
 ### Task 2.1: nomes `-hf-rc` / `-hf` e final = último rc sem `-rc`
 
-**Status:** ⏳ pending
+**Status:** ✅ done (3e268b2)
 
 **Files:**
 - Modify `release.mjs`: cabeçalho, `TAG_RE` ~35, `parseTag` ~118, `fmt`/`fmtRc` ~133, `rcsOf` ~147, `cmdRc`, `cmdFinal`, `cmdCutRelease`, `cmdCutHotfix`, `checkDeploy`, `cmdStatus`
@@ -569,6 +569,48 @@ Revisor (subagente novo, só leitura, "skip style"): 5 achados.
   `GITHUB_REF_TYPE=tag` num dispatch real a partir de uma tag. Conferir no primeiro uso.
 
 ### Fase 2
+
+Branch `feat/hotfix-hf-tags`, 2026-11-05. Commit: `3e268b2` (2.1). RED antes da implementação: 42 MISS,
+todos nos nomes `-hf` (seções 5, 6, 10, 12, 13, 14b e 15). Os passos legados da seção 15 já passavam
+(são guardas, não RED).
+
+Fim da saída de `bash test/fixtures.sh "" "$(mktemp -d)"`:
+
+```
+$ release.mjs deploy-check v0.1.2-hf --prod   [expect ok: "✓ v0.1.2-hf can go to prod (same code as v0.1.2-hf-rc)"]
+✓ v0.1.2-hf can go to prod (same code as v0.1.2-hf-rc)
+(exit 0)
+
+✓ all expectations met
+(107 passos expect/expect_out + 21 check, exit 0)
+```
+
+Com o kit como fonte (`bash test/fixtures.sh . "$(mktemp -d)"`, default branch `feat/hotfix-hf-tags`): exit 0,
+`✓ all expectations met`, 107 passos + 21 check, 0 MISS.
+
+Surpresas e decisões:
+
+- **Fora da lista do plano, mas pedido pela fase:** as seções 12 (B2), 13 (B1) e 14b (B6) criavam à mão rcs e
+  finais de hotfix com os nomes antigos. Agora usam `-hf-rc`/`-hf`, e ficaram fixadas as mensagens do B1
+  (`hotfix/v0.1: v0.1.1-hf-rc` na lista de linhas abertas), do B2 (`prod v0.1.1-hf`) e do B6 (comentário
+  `shipped as v0.1.1-hf`). A 14b também prova que o final `-hf` real vira release e não prerelease.
+- **Latest:** o mock do GitHub não registra `make_latest`. O kit manda `make_latest: 'true'` para todo release
+  que não é prerelease, então o check `release v0.1.1-hf` (sem `(prerelease)`) cobre isso.
+- **Seção 5, a mais:** o rc no commit do cut do hotfix (`no new code on hotfix/v0.2`), o comentário do B6 com
+  `v0.2.3-hf` e o re-run do `final` depois da tag (`✓ v0.2.3-hf already on`). A seção 10 fixa
+  `in prod: v0.2.3-hf`.
+- **Seção 15, a mais:** o final de um rc legado `-rc.N` (`v0.1.0-rc.1` → `v0.1.0`), a lista de tags e a linha
+  do hotfix no `status`, o rollback para um final legado (`deploy-check v0.1.0 --prod`), o `cut-hotfix` com
+  rc legado (`next rc v0.1.2-hf-rc`) e, depois do final `-hf`, o `status` e o rollback para `v0.1.2-hf`.
+- O `v1.0` manual segue ignorado também pelo aviso de tags manuais do `status`, que só olha tags de release.
+  Já era assim.
+- O `status` lista todos os finais de um X.Y na linha da release, se o branch dela ainda existe
+  (`release/v0.1: shipped (v0.1.0, v0.1.2-hf)`). Comportamento de antes, agora com o nome novo.
+- Workflows e rulesets: nenhum filtro de tag exclui `-hf` (`refs/tags/v*`). Nada mudou neles.
+- ⚠️ **Checkout compartilhado:** às 16:20 outra sessão trocou o `HEAD` desta pasta para `master` (e apagou
+  `fix/kit-guards`) enquanto esta fase tinha mudanças sem commit. Os três refs estavam no mesmo commit, então
+  nada se perdeu. Voltei para `feat/hotfix-hf-tags` antes do commit.
+
 ### Fase 3
 
 - O commit `4810e87` (branch `claude/fix-personal-rulesets-40ba86`, 2026-11-04, nunca mergeado) faz o

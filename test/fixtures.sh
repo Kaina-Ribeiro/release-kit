@@ -5,7 +5,8 @@
 # Creates <scratch>/remote.git (bare copy) and <scratch>/work (clone). Tags and branches that the
 # automation "would" create are simulated by hand inside that copy; the source repo is untouched.
 # Each later section starts from its own copy (fresh <name>: <scratch>/<name>/{remote.git,work}).
-# Candidates are vX.Y.Z-rc, one patch per rc (v0.2.0-rc, v0.2.1-rc, …); the final is the last rc.
+# Candidates are vX.Y.Z-rc on a release line and vX.Y.Z-hf-rc on a hotfix line, one patch per rc
+# (v0.2.0-rc, v0.2.1-rc, …, v0.2.3-hf-rc); the final is the last rc without -rc (v0.2.3-hf).
 # Every step asserts its outcome (expect, expect_out, check); any miss makes the script exit 1.
 set -uo pipefail
 
@@ -196,26 +197,30 @@ expect_out fail "already shipped as v0.2.2" rc --branch release/v0.2 --dry-run
 
 echo; echo "=== 5. hotfix on v0.2"
 expect ok cut-release --dry-run
-expect_out ok "in prod: v0.2.2; the hotfix's next rc will be v0.2.3-rc" cut-hotfix --dry-run
+expect_out ok "in prod: v0.2.2; the hotfix's next rc will be v0.2.3-hf-rc" cut-hotfix --dry-run
 branch hotfix/v0.2 v0.2.2
 expect_out fail "is older" conventions --head release/v0.3 --base hotfix/v0.2 --title "chore(sync): merge release/v0.3 into hotfix/v0.2"
 expect ok conventions --head hotfix/v0.2 --base release/v0.3 --title "chore(sync): merge hotfix/v0.2 into release/v0.3"
-expect ok rc --branch hotfix/v0.2 --dry-run
+expect_out ok "no new code on hotfix/v0.2, no rc" rc --branch hotfix/v0.2 --dry-run
 commit_on hotfix/v0.2 "fix(ABC-6): prod bug"
-expect ok rc --branch hotfix/v0.2 --dry-run
-tag v0.2.3-rc origin/hotfix/v0.2
+expect_out ok "hotfix/v0.2 → v0.2.3-hf-rc (first rc)" rc --branch hotfix/v0.2 --dry-run
+tag v0.2.3-hf-rc origin/hotfix/v0.2
 expect ok sync --branch hotfix/v0.2 --dry-run
 merge_into_default hotfix/v0.2
+expect_out ok "→ v0.2.3-hf (same code as v0.2.3-hf-rc)" final --head hotfix/v0.2 --dry-run
 expect_out ok "would open PR \"chore(sync): merge $def into release/v0.3\"" final --head hotfix/v0.2 --dry-run
-tag v0.2.3 "origin/$def"
-expect ok cut-hotfix --dry-run
+expect_out ok "Closed because hotfix/v0.2 shipped as v0.2.3-hf; its changes reach release/v0.3 through the sync PR." final --head hotfix/v0.2 --dry-run
+tag v0.2.3-hf "origin/$def"
+echo "  (v0.2.3-hf is a final: prod runs it, the next hotfix starts from it, a re-run sees it shipped)"
+expect_out ok "in prod: v0.2.3-hf; the hotfix's next rc will be v0.2.4-hf-rc" cut-hotfix --dry-run
+expect_out ok "✓ v0.2.3-hf already on" final --head hotfix/v0.2 --dry-run
 expect_out fail "is behind $def" conventions --head release/v0.3 --base "$def" --title "chore(release): ship release/v0.3"
 
 echo; echo "=== 6. deploy gate"
-expect_out ok "✓ v0.2.3-rc can go to a test stage" deploy-check v0.2.3-rc
-expect_out fail "is not the last rc" deploy-check v0.2.3-rc --prod
-expect_out ok "✓ v0.2.3 can go to prod (same code as v0.2.3-rc)" deploy-check v0.2.3 --prod
-expect_out fail "is not a release tag" deploy-check release/v0.3
+expect_out ok "✓ v0.2.3-hf-rc can go to a test stage" deploy-check v0.2.3-hf-rc
+expect_out fail "is not the last rc" deploy-check v0.2.3-hf-rc --prod
+expect_out ok "✓ v0.2.3-hf can go to prod (same code as v0.2.3-hf-rc)" deploy-check v0.2.3-hf --prod
+expect_out fail "\"release/v0.3\" is not a release tag (vX.Y.Z, vX.Y.Z-rc, vX.Y.Z-hf or vX.Y.Z-hf-rc); branches and other refs never deploy" deploy-check release/v0.3
 
 echo; echo "=== 7. legacy rc tags (vX.Y.Z-rc.N) are still read; new ones take the next patch"
 tag v0.3.0-rc.1 origin/release/v0.3
@@ -267,7 +272,7 @@ unset CUBESHIP_URL CUBESHIP_TOKEN DEPLOY_TEST_APPS DEPLOY_PROD_APPS RELEASE_DEPL
 unset RELEASE_HEALTH_POLL_MS RELEASE_HEALTH_STABLE_S RELEASE_HEALTH_WAIT_S
 
 echo; echo "=== 10. final state"
-expect ok status
+expect_out ok "in prod:        v0.2.3-hf" status
 
 echo; echo "=== 11. B3: a stale local tag does not break the fetch; git errors read as git's"
 fresh b3
@@ -282,16 +287,17 @@ fresh b2
 branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): one"; tag v0.1.0-rc origin/release/v0.1
 merge_into_default release/v0.1; tag v0.1.0 "origin/$def"
 branch release/v0.2 "origin/$def"; commit_on release/v0.2 "feat(ABC-2): two"; tag v0.2.0-rc origin/release/v0.2
-branch hotfix/v0.1 v0.1.0; commit_on hotfix/v0.1 "fix(ABC-3): prod bug"; tag v0.1.1-rc origin/hotfix/v0.1
-expect ok deploy-check v0.1.1-rc --prod
-merge_into_default hotfix/v0.1; tag v0.1.1 "origin/$def"
+branch hotfix/v0.1 v0.1.0; commit_on hotfix/v0.1 "fix(ABC-3): prod bug"; tag v0.1.1-hf-rc origin/hotfix/v0.1
+expect ok deploy-check v0.1.1-hf-rc --prod
+merge_into_default hotfix/v0.1; tag v0.1.1-hf "origin/$def"
 expect_out fail "v0.2.0-rc lacks what $def has" deploy-check v0.2.0-rc --prod
+expect_out fail "prod v0.1.1-hf): prod would lose it. Merge the open sync PR (or $def) into release/v0.2" deploy-check v0.2.0-rc --prod
 expect ok deploy-check v0.2.0-rc
 git checkout --quiet -B release/v0.2 origin/release/v0.2
 git merge --quiet --no-ff -X ours "origin/$def" -m "Merge $def into release/v0.2"; git push --quiet origin release/v0.2
 tag v0.2.1-rc origin/release/v0.2
 expect ok deploy-check v0.2.1-rc --prod
-expect ok deploy-check v0.1.1 --prod
+expect_out ok "✓ v0.1.1-hf can go to prod (same code as v0.1.1-hf-rc)" deploy-check v0.1.1-hf --prod
 
 echo; echo "=== 13. B1: a deploy without a tag takes the line or tag the run starts from"
 fresh b1
@@ -300,10 +306,10 @@ merge_into_default release/v0.1; tag v0.1.0 "origin/$def"; git push --quiet orig
 branch release/v0.2 "origin/$def"; commit_on release/v0.2 "feat(ABC-2): two"; tag v0.2.0-rc origin/release/v0.2
 export DEPLOY_PROD_APPS=demo/prod/api DEPLOY_TEST_APPS=demo/test/api
 expect_out ok "deploying v0.2.0-rc to prod" deploy --stage prod --dry-run
-branch hotfix/v0.1 v0.1.0; commit_on hotfix/v0.1 "fix(ABC-3): prod bug"; tag v0.1.1-rc origin/hotfix/v0.1
-GITHUB_REF_TYPE=branch GITHUB_REF_NAME=hotfix/v0.1 expect_out ok "deploying v0.1.1-rc to prod" deploy --stage prod --dry-run
+branch hotfix/v0.1 v0.1.0; commit_on hotfix/v0.1 "fix(ABC-3): prod bug"; tag v0.1.1-hf-rc origin/hotfix/v0.1
+GITHUB_REF_TYPE=branch GITHUB_REF_NAME=hotfix/v0.1 expect_out ok "deploying v0.1.1-hf-rc to prod" deploy --stage prod --dry-run
 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0-rc expect_out ok "deploying v0.2.0-rc to test" deploy --stage test --dry-run
-GITHUB_REF_TYPE=branch GITHUB_REF_NAME="$def" expect_out fail "2 lines are open (hotfix/v0.1: v0.1.1-rc, release/v0.2: v0.2.0-rc)" deploy --stage prod --dry-run
+GITHUB_REF_TYPE=branch GITHUB_REF_NAME="$def" expect_out fail "2 lines are open (hotfix/v0.1: v0.1.1-hf-rc, release/v0.2: v0.2.0-rc)" deploy --stage prod --dry-run
 unset DEPLOY_PROD_APPS DEPLOY_TEST_APPS
 
 echo; echo "=== 14. B4: cutting a release does not take the rc of the line it is cut from"
@@ -328,23 +334,23 @@ export GITHUB_API_URL=http://127.0.0.1:47125 GH_TOKEN=test-token
 branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): one"; tag v0.1.0-rc origin/release/v0.1
 merge_into_default release/v0.1; tag v0.1.0 "origin/$def"; git push --quiet origin --delete release/v0.1
 branch release/v0.2 "origin/$def"; commit_on release/v0.2 "feat(ABC-2): two"; tag v0.2.0-rc origin/release/v0.2
-branch hotfix/v0.1 v0.1.0; commit_on hotfix/v0.1 "fix(ABC-3): prod bug"; tag v0.1.1-rc origin/hotfix/v0.1
+branch hotfix/v0.1 v0.1.0; commit_on hotfix/v0.1 "fix(ABC-3): prod bug"; tag v0.1.1-hf-rc origin/hotfix/v0.1
 echo "  (the hotfix's own sync PR, which GitHub closes once shipping deletes hotfix/v0.1)"
 expect_out ok "✓ opened #1" sync --branch hotfix/v0.1
 merge_into_default hotfix/v0.1
 echo "$def" > "$scratch/ghmock/refuse-pulls-from"
 echo "  (GitHub refuses the sync PR from $def: the final still ships, warns, and its comment says no PR exists)"
 expect_out ok "warning: could not open the sync PR from $def into release/v0.2" final --head hotfix/v0.1
-check "the final tag is out" git ls-remote --quiet --exit-code --tags origin refs/tags/v0.1.1
-check "it has a GitHub release" grep -qx "release v0.1.1" "$scratch/ghmock/log"
+check "the final tag is out" git ls-remote --quiet --exit-code --tags origin refs/tags/v0.1.1-hf
+check "it has a GitHub release, not a prerelease (so it is marked latest)" grep -qx "release v0.1.1-hf" "$scratch/ghmock/log"
 check "the shipped branch is gone" not git ls-remote --quiet --exit-code --heads origin hotfix/v0.1
 check "the comment on #1 says the sync into release/v0.2 is still to do" grep -qF \
-  "comment #1: Closed because hotfix/v0.1 shipped as v0.1.1; its changes are in $def but no sync PR into release/v0.2 could be opened: open one (merge $def into release/v0.2)." "$scratch/ghmock/log"
+  "comment #1: Closed because hotfix/v0.1 shipped as v0.1.1-hf; its changes are in $def but no sync PR into release/v0.2 could be opened: open one (merge $def into release/v0.2)." "$scratch/ghmock/log"
 rm "$scratch/ghmock/refuse-pulls-from"
 echo "  (a re-run once GitHub allows it opens the sync PR and points #1 at it)"
 expect_out ok "✓ opened #2" final --head hotfix/v0.1
 check "the comment on #1 points at #2" grep -qF \
-  "comment #1: Closed because hotfix/v0.1 shipped as v0.1.1; its changes reach release/v0.2 through #2." "$scratch/ghmock/log"
+  "comment #1: Closed because hotfix/v0.1 shipped as v0.1.1-hf; its changes reach release/v0.2 through #2." "$scratch/ghmock/log"
 kill $ghmock 2>/dev/null
 
 echo; echo "=== 14c. a re-run creates the GitHub release that a failed run left missing"
@@ -376,6 +382,32 @@ check "and then deleted the shipped branch" not git ls-remote --quiet --exit-cod
 expect_out ok "release v0.1.0 already exists" final --head release/v0.1
 kill $ghmock 2>/dev/null
 export GH_TOKEN=; unset GITHUB_API_URL
+
+echo; echo "=== 15. legacy and manual tags; a hotfix that switches to -hf mid-way"
+fresh legacy
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): one"; tag v0.1.0-rc.1 origin/release/v0.1
+merge_into_default release/v0.1
+echo "  (a legacy vX.Y.Z-rc.N ships as vX.Y.Z)"
+expect_out ok "→ v0.1.0 (same code as v0.1.0-rc.1)" final --head release/v0.1 --dry-run
+tag v0.1.0 "origin/$def"
+echo "  (a hotfix rc from before -hf, and a manual tag that is not a release tag)"
+branch hotfix/v0.1 v0.1.0; commit_on hotfix/v0.1 "fix(ABC-2): old style"; tag v0.1.1-rc origin/hotfix/v0.1
+git tag v1.0 "origin/$def"; git push --quiet origin refs/tags/v1.0
+expect_out ok "in prod:        v0.1.0" status
+expect_out ok "tags:           v0.1.0-rc.1, v0.1.0, v0.1.1-rc" status
+expect_out ok "hotfix/v0.1: open, last rc v0.1.1-rc, next rc v0.1.2-hf-rc" status
+expect_out ok "release/v0.2 branches from $def" cut-release --dry-run
+expect_out ok "✓ v0.1.0 can go to prod (same code as v0.1.0-rc.1)" deploy-check v0.1.0 --prod
+commit_on hotfix/v0.1 "fix(ABC-3): new style"
+expect_out ok "in prod: v0.1.0; the hotfix's next rc will be v0.1.2-hf-rc" cut-hotfix --dry-run
+expect_out ok "hotfix/v0.1 → v0.1.2-hf-rc (last rc v0.1.1-rc)" rc --branch hotfix/v0.1 --dry-run
+tag v0.1.2-hf-rc origin/hotfix/v0.1
+merge_into_default hotfix/v0.1
+echo "  (the final follows the last rc's name)"
+expect_out ok "→ v0.1.2-hf (same code as v0.1.2-hf-rc)" final --head hotfix/v0.1 --dry-run
+tag v0.1.2-hf "origin/$def"
+expect_out ok "in prod:        v0.1.2-hf" status
+expect_out ok "✓ v0.1.2-hf can go to prod (same code as v0.1.2-hf-rc)" deploy-check v0.1.2-hf --prod
 
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
