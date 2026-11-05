@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // A tiny stand-in for the GitHub REST API, for test/fixtures.sh. Usage: github-mock.mjs <port> <dir>
-// Pull requests, PR comments and releases, in memory, for any /repos/<owner>/<repo>. Requires
+// Pull requests, issues, comments and releases, in memory, for any /repos/<owner>/<repo>. Requires
 // `authorization: Bearer test-token`. Each change is appended to <dir>/log (`pull #2 main ->
-// release/v0.2`, `comment #1: <body>`, `release v0.1.1`), for the fixtures to check. While
+// release/v0.2`, `issue #3 [release-kit]: <title>` plus its body, `comment #1: <body>`, `closed #3`,
+// `release v0.1.1`), for the fixtures to check. Pulls and issues share their numbers, as on GitHub. While
 // <dir>/refuse-pulls-from holds a branch name, opening a PR from that branch answers 403, like a
 // repository whose settings do not let GitHub Actions create pull requests. If <dir>/fail-next-release
 // exists, the next release creation answers 500 and removes the file (a GitHub outage after a tag).
@@ -12,6 +13,8 @@ import { join } from 'node:path';
 
 const [port, dir] = process.argv.slice(2);
 const pulls = [];
+const issues = [];
+const nextNumber = () => pulls.length + issues.length + 1;
 const releases = new Map(); // tag → release
 writeFileSync(join(dir, 'log'), '');
 const record = (line) => appendFileSync(join(dir, 'log'), `${line}\n`);
@@ -43,14 +46,35 @@ createServer((req, res) => {
         record(`refused pull ${input.head} -> ${input.base}`);
         return send(403, { message: 'GitHub Actions is not permitted to create or approve pull requests.' });
       }
-      const pr = { number: pulls.length + 1, state: 'open', title: input.title, head: input.head, base: input.base };
+      const pr = { number: nextNumber(), state: 'open', title: input.title, head: input.head, base: input.base };
       pulls.push(pr);
       record(`pull #${pr.number} ${pr.head} -> ${pr.base}`);
       return send(201, pr);
     }
+    if (path === '/issues' && req.method === 'GET') {
+      const labels = (url.searchParams.get('labels') ?? '').split(',').filter(Boolean);
+      return send(200, issues.filter((i) => i.state === (url.searchParams.get('state') ?? 'open')
+        && labels.every((l) => i.labels.some((il) => il.name === l))));
+    }
+    if (path === '/issues' && req.method === 'POST') {
+      const issue = { number: nextNumber(), state: 'open', title: input.title, body: input.body,
+        labels: (input.labels ?? []).map((name) => ({ name })) };
+      issues.push(issue);
+      record(`issue #${issue.number} [${(input.labels ?? []).join(',')}]: ${issue.title}`);
+      record(input.body);
+      return send(201, issue);
+    }
+    const issue = /^\/issues\/(\d+)$/.exec(path);
+    if (issue && req.method === 'PATCH') {
+      const found = issues.find((i) => i.number === +issue[1]);
+      if (!found) return send(404, { message: 'Not Found' });
+      Object.assign(found, input);
+      if (input.state === 'closed') record(`closed #${found.number}`);
+      return send(200, found);
+    }
     const comment = /^\/issues\/(\d+)\/comments$/.exec(path);
     if (comment && req.method === 'POST') {
-      if (!pulls.some((p) => p.number === +comment[1])) return send(404, { message: 'Not Found' });
+      if (![...pulls, ...issues].some((p) => p.number === +comment[1])) return send(404, { message: 'Not Found' });
       record(`comment #${comment[1]}: ${input.body}`);
       return send(201, { id: Date.now() });
     }
