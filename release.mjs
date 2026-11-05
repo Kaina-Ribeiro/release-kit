@@ -24,7 +24,8 @@
 //        --title, --base, --prod, --stage, --apps. Env: DEFAULT_BRANCH, GITHUB_REPOSITORY,
 //        GH_TOKEN/GITHUB_TOKEN, TICKET_PATTERN, PR_TITLE, HEAD_REF, BASE_REF, HEAD_SHA,
 //        CUBESHIP_URL, CUBESHIP_TOKEN, DEPLOY_TEST_APPS, DEPLOY_PROD_APPS,
-//        RELEASE_HEALTH_STABLE_S, RELEASE_HEALTH_WAIT_S.
+//        RELEASE_HEALTH_STABLE_S, RELEASE_HEALTH_WAIT_S, GITHUB_REF_TYPE + GITHUB_REF_NAME (a
+//        deploy with no tag takes the tag or the line the run starts from).
 
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -735,14 +736,33 @@ function cmdDeployCheck() {
   checkDeploy(name, Boolean(opts.prod));
 }
 
-// Without a tag: the last rc of --branch, else of the newest open release line. For a test stage, a
-// --branch with no rc yet (a fresh cut, which takes no rc until new code lands) gives null.
+// Lines that can still take a deploy: release/* not shipped yet and every hotfix/*, in line order.
+const openLines = () => state().branches.filter((b) => b.kind === 'hotfix' || finalsOf(b.major, b.minor).length === 0);
+const lastRcOf = (line) => pendingRcs(line.major, line.minor).at(-1);
+
+// Without a tag, by what the run starts from: --branch (the rc job's test deploy), else the run's
+// ref (a tag deploys that tag; a line deploys its last rc), else the only open line. For a test
+// stage, a --branch with no rc yet (a fresh cut, which takes no rc until new code lands) gives null.
 function defaultDeployTag(stage) {
-  const line = opts.branch ? parseLine(opts.branch) : openReleases().at(-1);
-  if (!line) fail(opts.branch ? `"${opts.branch}" is not a version line` : 'no open release line; pass the tag to deploy');
-  const last = pendingRcs(line.major, line.minor).at(-1);
-  if (!last && opts.branch && stage === 'test') return null;
-  if (!last) fail(`${line.name} has no rc to deploy`);
+  if (opts.branch) {
+    const line = parseLine(opts.branch);
+    if (!line) fail(`"${opts.branch}" is not a version line`);
+    const last = lastRcOf(line);
+    if (!last && stage === 'test') return null;
+    if (!last) fail(`${line.name} has no rc to deploy`);
+    return last.name;
+  }
+  const refName = process.env.GITHUB_REF_NAME;
+  if (process.env.GITHUB_REF_TYPE === 'tag' && refName) return refName;
+  const ref = parseLine(refName);
+  const open = ref ? [ref] : openLines();
+  if (open.length > 1) {
+    const list = open.map((l) => `${l.name}: ${lastRcOf(l)?.name ?? 'no rc'}`).join(', ');
+    fail(`${open.length} lines are open (${list}); pass the tag or run from the line's branch`);
+  }
+  if (!open.length) fail('no open line; pass the tag to deploy');
+  const last = lastRcOf(open[0]);
+  if (!last) fail(`${open[0].name} has no rc to deploy`);
   return last.name;
 }
 

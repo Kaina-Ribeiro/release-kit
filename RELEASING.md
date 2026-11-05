@@ -45,8 +45,8 @@ How code moves from a pull request to production in this repository. The automat
    1. Merge any open sync PR into the release first (it brings what prod already has, such as a
       shipped hotfix; prod refuses an rc without it). Then test the line's last rc on the test stage.
    2. Actions → Release → Run workflow, **from the release branch** → `deploy`, stage `prod`,
-      tag empty (= the newest open release's last rc). Without deploys configured, deploy that rc
-      with your own tool after `deploy-check <rc> --prod`.
+      tag empty (= that branch's last rc). Without deploys configured, deploy that rc with your
+      own tool after `deploy-check <rc> --prod`.
    3. PR `release/vX.Y` → default branch, **merge commit** (never squash or rebase). The release
       must contain the default branch first (the `conventions` check says so). The merge tags
       that rc's version as final (`v0.2.2-rc` → `v0.2.2`) with release notes, without deploying
@@ -54,8 +54,8 @@ How code moves from a pull request to production in this repository. The automat
 5. **Hotfix**: Actions → Release → `cut-hotfix` (branches from the final tag in prod; if the
    branch already exists it is reused; it gets its first rc with the first fix, never at the
    final tag itself). Fix PRs into `hotfix/vX.Y` (squash) → test the rc →
-   `deploy` to prod with that rc's tag → PR into the default branch (merge commit) → the last
-   rc's `vX.Y.Z`, and the branch is deleted.
+   `deploy` to prod, **run from `hotfix/vX.Y`** with the tag empty (= its last rc) → PR into the
+   default branch (merge commit) → the last rc's `vX.Y.Z`, and the branch is deleted.
 6. **Sync PRs** (`chore(sync): merge A into B`, opened automatically): review and merge with a
    **merge commit**. On conflicts, resolve on a branch cut from the target, never on the source.
 
@@ -76,7 +76,10 @@ pointing back at the previous tag.
 `node .github/scripts/release.mjs deploy-check <tag> [--prod]` exits non-zero when a deploy
 breaks these rules; call it from any other deploy tool. `deploy <tag> --stage test|prod` runs it,
 then points each app at the tag and deploys it on Cubeship, in order, waiting for each.
-Actions → Release → `deploy` is the same as a button (also for rollback).
+Actions → Release → `deploy` is the same as a button (also for rollback). With the tag empty it
+deploys the last rc of the line you run it from (`release/vX.Y` or `hotfix/vX.Y`), or the tag
+you run it from. Run from the default branch, it takes the only open line's last rc and refuses
+when more than one line is open (a hotfix and a release): run it from the line's branch instead.
 
 **A deploy is green only if the app stays up.** Cubeship calls a deploy "succeeded" as soon as
 it starts the new container, even when the process dies a second later (a missing env var, a

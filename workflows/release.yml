@@ -33,7 +33,7 @@ on:
         options: [test, prod]
         default: test
       tag:
-        description: 'deploy only: the tag. Empty = last rc of the newest open release.'
+        description: 'deploy only: the tag. Empty = last rc of the branch you run from (or the tag you run from).'
         type: string
         required: false
         default: ''

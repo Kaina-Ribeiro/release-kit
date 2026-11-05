@@ -178,7 +178,8 @@ export CUBESHIP_URL="http://127.0.0.1:$port" CUBESHIP_TOKEN=test-key RELEASE_DEP
 export RELEASE_HEALTH_POLL_MS=50 RELEASE_HEALTH_STABLE_S=1 RELEASE_HEALTH_WAIT_S=2
 export DEPLOY_TEST_APPS="demo/test/api demo/test/web" DEPLOY_PROD_APPS="demo/prod/api,demo/prod/web"
 tag v0.3.1-rc origin/release/v0.3
-expect ok deploy --stage test --dry-run
+echo "  (hotfix/v0.2 still exists, so a deploy with no tag and no line to start from has two to pick)"
+expect_out fail "2 lines are open" deploy --stage test --dry-run
 expect ok deploy --stage test --branch release/v0.3
 expect ok deploy --stage test --branch release/v0.3
 expect_out fail "(that is v0.3.1-rc)" deploy --stage prod v0.3.0-rc.1
@@ -201,7 +202,7 @@ tag v0.3.2-rc origin/release/v0.3
 expect ok deploy --stage test --branch release/v0.3
 merge_into_default release/v0.3
 expect_out fail "prod does not run v0.3.2-rc" final --head release/v0.3 --dry-run
-expect ok deploy --stage prod
+expect ok deploy --stage prod --branch release/v0.3
 expect_out ok "✓ prod runs v0.3.2-rc" final --head release/v0.3 --dry-run
 kill $mock 2>/dev/null
 unset CUBESHIP_URL CUBESHIP_TOKEN DEPLOY_TEST_APPS DEPLOY_PROD_APPS RELEASE_DEPLOY_POLL_MS
@@ -233,6 +234,19 @@ git merge --quiet --no-ff -X ours "origin/$def" -m "Merge $def into release/v0.2
 tag v0.2.1-rc origin/release/v0.2
 expect ok deploy-check v0.2.1-rc --prod
 expect ok deploy-check v0.1.1 --prod
+
+echo; echo "=== 13. B1: a deploy without a tag takes the line or tag the run starts from"
+fresh b1
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): one"; tag v0.1.0-rc origin/release/v0.1
+merge_into_default release/v0.1; tag v0.1.0 "origin/$def"; git push --quiet origin --delete release/v0.1
+branch release/v0.2 "origin/$def"; commit_on release/v0.2 "feat(ABC-2): two"; tag v0.2.0-rc origin/release/v0.2
+export DEPLOY_PROD_APPS=demo/prod/api DEPLOY_TEST_APPS=demo/test/api
+expect_out ok "deploying v0.2.0-rc to prod" deploy --stage prod --dry-run
+branch hotfix/v0.1 v0.1.0; commit_on hotfix/v0.1 "fix(ABC-3): prod bug"; tag v0.1.1-rc origin/hotfix/v0.1
+GITHUB_REF_TYPE=branch GITHUB_REF_NAME=hotfix/v0.1 expect_out ok "deploying v0.1.1-rc to prod" deploy --stage prod --dry-run
+GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0-rc expect_out ok "deploying v0.2.0-rc to test" deploy --stage test --dry-run
+GITHUB_REF_TYPE=branch GITHUB_REF_NAME="$def" expect_out fail "2 lines are open (hotfix/v0.1: v0.1.1-rc, release/v0.2: v0.2.0-rc)" deploy --stage prod --dry-run
+unset DEPLOY_PROD_APPS DEPLOY_TEST_APPS
 
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
