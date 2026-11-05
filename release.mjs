@@ -77,8 +77,13 @@ function output(key, value) {
 
 // ---------- git ----------
 
+// A failing git command reads as git's own message, not a Node stack.
 function git(...args) {
-  return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  } catch (err) {
+    throw new Failure(`git ${args.join(' ')} failed: ${err.stderr?.toString().trim() || err.message}`);
+  }
 }
 function gitOk(...args) {
   try { git(...args); return true; } catch { return false; }
@@ -136,7 +141,10 @@ const fmtRc = (major, minor, patch) => `${fmt(major, minor, patch)}-rc`;
 let stateCache;
 function state() {
   if (stateCache) return stateCache;
-  if (!opts['no-fetch']) git('fetch', 'origin', '--tags', '--prune', '--quiet');
+  // --force: a tag checkout can leave a local copy of a tag that differs from the remote's (a
+  // lightweight one where the remote has an annotated tag), and a plain fetch refuses to replace
+  // it. The remote is the truth: only the automation creates tags.
+  if (!opts['no-fetch']) git('fetch', 'origin', '--tags', '--prune', '--force');
   const tags = lines(git('tag', '--list', 'v*')).map(parseTag).filter(Boolean).sort(cmpTag);
   const branches = lines(git('for-each-ref', '--format=%(refname:strip=3)',
     'refs/remotes/origin/release', 'refs/remotes/origin/hotfix')).map(parseLine).filter(Boolean).sort(cmpLine);
@@ -236,7 +244,7 @@ function deleteBranch(name) {
   act(`delete branch ${name}`);
   if (dryRun) return;
   try { git('push', 'origin', '--delete', name); } catch (err) {
-    warn(`could not delete ${name} (${err.stderr?.toString().trim() || err.message}); delete it by hand`);
+    warn(`could not delete ${name} (${err.message}); delete it by hand`);
   }
 }
 

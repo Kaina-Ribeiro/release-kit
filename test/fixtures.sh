@@ -206,6 +206,14 @@ unset RELEASE_HEALTH_POLL_MS RELEASE_HEALTH_STABLE_S RELEASE_HEALTH_WAIT_S
 echo; echo "=== 10. final state"
 expect ok status
 
+echo; echo "=== 11. B3: a stale local tag does not break the fetch; git errors read as git's"
+fresh b3
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): one"; tag v0.1.0-rc origin/release/v0.1
+c=$(git rev-parse 'v0.1.0-rc^{commit}'); git tag -d v0.1.0-rc >/dev/null; git tag v0.1.0-rc "$c"
+expect ok status
+git remote set-url origin "$scratch/nowhere.git"
+expect_out fail "git fetch origin --tags --prune --force failed: fatal:" status
+
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
 echo "✓ all expectations met"
