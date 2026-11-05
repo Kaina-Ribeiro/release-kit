@@ -7,7 +7,7 @@ values. `RELEASING.md` holds the rules it enforces; it is copied into each repos
 
 | File | Installed as | Does |
 |:--|:--|:--|
-| `release.mjs` | `.github/scripts/release.mjs` | `rc`, `final`, `sync`, `cleanup`, `cut-release`, `cut-hotfix`, `deploy`, `deploy-check`; `--dry-run` |
+| `release.mjs` | `.github/scripts/release.mjs` | `rc`, `final`, `sync`, `cleanup`, `cut-release`, `cut-hotfix`, `deploy` (fails unless each app stays up), `deploy-check`; `--dry-run` |
 | `workflows/release.yml` | `.github/workflows/release.yml` | rc + sync + test-stage deploy on push to a version line (none for a commit already tagged, e.g. a cut), branch cleanup on merge into a version line, final on merge into the default branch, cuts and deploys on dispatch |
 | `workflows/pr-checks.yml` | `.github/workflows/pr-checks.yml` | `checks` (install, lint, typecheck) and `conventions` (branch name, PR title, target) |
 | `rulesets/*.json` | GitHub settings | Default branch, version lines and `v*` tags |
@@ -32,4 +32,6 @@ Builds a throwaway copy of `<source-repo>` with fixture tags and runs the whole 
 `--dry-run`, with `test/cubeship-mock.mjs` standing in for Cubeship. It prints each command with
 its output and exit code; read the log. Among others it covers: one rc per new commit, no rc for a
 cut at an already-tagged commit (section 2b and the hotfix in section 5), the deploy gate, legacy
-`-rc.N` tags and test/prod deploys.
+`-rc.N` tags and test/prod deploys. Lines marked `[expect ok|fail]` check the exit code, and the
+script exits 1 if any misses: section 8b fails a deploy whose container crashloops or exits
+although Cubeship calls it "succeeded".
