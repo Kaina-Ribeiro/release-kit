@@ -376,7 +376,7 @@ expect_out ok "→ v0.1.2-hf (same code as v0.1.2-hf-rc)" final --head hotfix/v0
 
 ### Task 3.3: rulesets, install, comando local e release do kit
 
-**Status:** 🔄 in progress (4a1ab6a + achados do revisor; falta PR, merge e `kit-release`)
+**Status:** ✅ done (4a1ab6a, 692f95b; PR #11 → `920ce96`; `v1.0.0` e `v1` em `920ce96`)
 
 **Files:**
 - Modify: `rulesets/default-branch.json` e `rulesets/version-lines.json`
@@ -403,7 +403,7 @@ expect_out ok "→ v0.1.2-hf (same code as v0.1.2-hf-rc)" final --head hotfix/v0
 
 ### Task 3.4: rollout nos 3 repos
 
-**Status:** ⏳ pending. Cada push, PR e mudança de ruleset **precisa do "sim" do dono**. Os tickets são definidos com o dono.
+**Status:** ✅ done (totem #61, npac #50, ari #14; rulesets dos 3 com os nomes novos; rc + `deploy-test` verdes no totem e no npac, rc no ari) Cada push, PR e mudança de ruleset **precisa do "sim" do dono**. Os tickets são definidos com o dono.
 
 Para cada repo (`npac-corporation-crm`, `totem-comanda`, `ari-ribeiro-karaoke`):
 
@@ -646,12 +646,46 @@ Surpresas e decisões:
   branch, troca só `checks`/`conventions` por `pr-checks / …` e manda `{"rules": …}`. Simulado contra o totem
   (PUT trocado por `echo`): pega os 2 rulesets certos e mantém o resto.
 - **Linhas abertas em 2026-11-05 (fim do dia):** npac `release/v0.8` (não mais `v0.7`), totem `release/v0.3`, ari
-  **nenhuma** (o `release/v0.1` já foi entregue). No ari o primeiro rc pelo `@v1` só sai depois de um `cut-release`.
+  `release/v0.3` (aberta às 16:50 depois do merge do PR #11 do ari, `v0.2.0` entregue). Um `cut-release` em dry-run no
+  ari ([run 42108378145](https://github.com/Kaina-Ribeiro/ari-ribeiro-karaoke/actions/runs/42108378145)) mostrou
+  isso; nada foi cortado.
+- ⚠️ **O ari não faz deploy pelo Cubeship:** não tem `DEPLOY_*_APPS` nem `CUBESHIP_*` (o site sai pelo Cloudflare Pages
+  no `site.yml`, a cada push na `main`). O `deploy-test` do kit é pulado lá, e o `checking that it stays up` só aparece
+  se um dia o ari deployar pelo Cubeship. Npac e totem têm `DEPLOY_TEST_APPS` e `CUBESHIP_*`.
+  **Decisão do dono (2026-11-05):** no ari, "pronto" é o rc verde pelo `@v1`, com o `deploy-test` pulado.
+- **Deriva antes do rollout** (cópias nas linhas abertas × kit `6b87c3e`): `pr-checks.yml` igual nos 3; `release.yml`
+  difere só na descrição do input `tag` (npac, totem) e, no ari, também nas variáveis do health gate; `release.mjs`
+  276 linhas (npac, totem) e 357 (ari). Nada específico de um repo se perde com os chamadores. O secret
+  `RELEASE_PR_TOKEN` do totem não é usado por nenhum workflow do kit.
 - O chamador de `pr-checks` se chama `pr-checks`; o do `release`, `release` (os checks aparecem como `release / rc` etc.).
 - `concurrency` do PR fica só no chamador: o mesmo grupo no chamado travaria o próprio run.
 - O `kit-release` só roda a partir da `master` e o `dry_run` vem ligado por padrão.
 - Fixtures: os dois modos com exit 0 e `✓ all expectations met` (107 passos + 21 check, `release.mjs` só mudou um
   comentário).
+
+**Release do kit:** PR [#11](https://github.com/Kaina-Ribeiro/release-kit/pull/11) mergeado pelo dono (`920ce96`, CI verde).
+`kit-release` 1.0.0: dry-run [42109138130](https://github.com/Kaina-Ribeiro/release-kit/actions/runs/42109138130)
+(`would tag v1.0.0 on 920ce96a82e5 and move v1 to it`), real
+[42109291295](https://github.com/Kaina-Ribeiro/release-kit/actions/runs/42109291295) (`✓ v1.0.0 on 920ce96a82e5; v1 moved
+to it`, suíte verde antes). O comando local com `raw.githubusercontent.com/…/v1/release.mjs` rodou o `status` do ari.
+
+**Rollout (Task 3.4):**
+
+| Repo | Ticket | PR → linha | Rulesets | Push na linha depois do merge | Estado |
+|:--|:--|:--|:--|:--|:--|
+| totem-comanda | [COM-142](https://linear.app/gabriel-ribeiro/issue/COM-142) (criado no Linear) | [#61](https://github.com/Kaina-Ribeiro/totem-comanda/pull/61) → `release/v0.3`, merge `7d69cf6` | `default branch` e `version lines`: diff antes × depois = só as 4 linhas de `context`; bypass igual | [42112654616](https://github.com/Kaina-Ribeiro/totem-comanda/actions/runs/42112654616): `v0.3.52-rc`, `deploy-test` verde (`comanda/itodev/mock` e `web`, os dois com `checking that it stays up`) | ✅ `status`: prod `v0.2.5`, `release/v0.3` com rc `v0.3.52-rc` |
+| npac-corporation-crm | NPAC-39 (definido pelo dono) | [#50](https://github.com/Kaina-Ribeiro/npac-corporation-crm/pull/50) → `release/v0.8`, merge `5902b88` | `default-branch` e `version-lines` renomeados **depois** do merge (o dono mergeou pelo bypass de admin); diff = só `context`; bypass igual (`pull_request` / `always`) | [42116985681](https://github.com/Kaina-Ribeiro/npac-corporation-crm/actions/runs/42116985681): `v0.8.3-rc`, `deploy-test` verde (`npac/itodev/api` e `web`, os dois com `checking that it stays up`) | ✅ `status`: prod `v0.7.5`, `release/v0.8` com rc `v0.8.3-rc` |
+| ari-ribeiro-karaoke | ARI-7 (definido pelo dono) | [#14](https://github.com/Kaina-Ribeiro/ari-ribeiro-karaoke/pull/14) → `release/v0.3`, merge `e57db63` | Idem npac | [42116625766](https://github.com/Kaina-Ribeiro/ari-ribeiro-karaoke/actions/runs/42116625766): `v0.3.2-rc` (sem deploy, decisão do dono). Logo depois o dono entregou a linha (PR #15 → `main`): [42117262671](https://github.com/Kaina-Ribeiro/ari-ribeiro-karaoke/actions/runs/42117262671) `final` → `v0.3.2` pelo `@v1` | ✅ `status`: prod `v0.3.2`, nenhuma linha aberta |
+
+- No totem, o `checks` do PR recebeu `CHECKS_DIRS: apps/web` por input e rodou `eslint` e `tsc` (o caminho vars → inputs funciona).
+- O PUT com o ruleset inteiro (achado #2 do revisor) foi provado aqui: o GitHub aceitou, e o GET depois só difere em `context`.
+  Nos 6 rulesets de branch dos 3 repos o resultado foi o mesmo.
+- Os PRs do npac e do ari passaram com os checks novos (mais `e2e`/`verify` do npac e `site` do ari). Um `conventions`
+  do npac aparece como falha, mas foi cancelado (`cancel-in-progress`) quando a descrição do PR foi editada.
+- Os itens "conferir no primeiro uso" da Fase 1: ✅ o token dos repos abre PRs e comenta (sandbox: sync e comentários
+  do `final`; totem/npac/ari: releases e prereleases); ✅ `deploy` disparado a partir de uma tag (sandbox).
+- `RELEASING.md` dos 3 repos eram cópias exatas de versões antigas do kit (totem e npac `472a4cb`, ari `3c79080`):
+  nada próprio se perdeu.
 
 Revisor (subagente novo, só leitura, "skip style"): 4 achados, nenhum nos workflows reutilizáveis (batem com o
 `origin/master`, só `vars` → `inputs`).
