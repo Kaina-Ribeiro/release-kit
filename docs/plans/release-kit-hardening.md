@@ -322,7 +322,7 @@ expect_out ok "→ v0.1.2-hf (same code as v0.1.2-hf-rc)" final --head hotfix/v0
 
 ### Task 3.1: spike (descartável)
 
-**Status:** ⏳ pending. **Precisa do "sim" do dono** para criar o repo `Kaina-Ribeiro/release-kit-sandbox` (privado) e fazer push do branch `spike/reusable` no kit.
+**Status:** ✅ done (spike `a206496` em `spike/reusable`, descartável; resultados em Notas → Spike F3). Falta só apagar `spike/reusable` (com o "sim").
 
 - [ ] **Step 1:** no branch `spike/reusable` do kit, criar `.github/workflows/spike.yml` com `on: workflow_call` (input `command`, string) e dois jobs:
   - Job `run`: imprime `github.event_name`, `github.event.repository.full_name`, `github.ref_name`, `inputs.command`, `job.workflow_repository`, `job.workflow_sha` e `vars.SPIKE_VAR`. Depois um step `id: boom` grava `error=boom` em `GITHUB_OUTPUT` e faz `exit 1`. O job tem `outputs.error: ${{ steps.boom.outputs.error }}`.
@@ -347,7 +347,7 @@ expect_out ok "→ v0.1.2-hf (same code as v0.1.2-hf-rc)" final --head hotfix/v0
 
 ### Task 3.2: workflows reutilizáveis + chamadores
 
-**Status:** ⏳ pending
+**Status:** ✅ done (bee9df5; ciclo no sandbox em Notas → Fase 3)
 
 **Files:**
 - Create: `.github/workflows/release.yml` e `.github/workflows/pr-checks.yml` (reutilizáveis)
@@ -376,7 +376,7 @@ expect_out ok "→ v0.1.2-hf (same code as v0.1.2-hf-rc)" final --head hotfix/v0
 
 ### Task 3.3: rulesets, install, comando local e release do kit
 
-**Status:** ⏳ pending
+**Status:** 🔄 in progress (4a1ab6a + achados do revisor; falta PR, merge e `kit-release`)
 
 **Files:**
 - Modify: `rulesets/default-branch.json` e `rulesets/version-lines.json`
@@ -503,11 +503,18 @@ done
 
 | # | Pergunta | Resultado |
 |:--|:--|:--|
-| 1 | `github.event` é o do chamador? | ⏳ |
-| 2 | `vars` chega no workflow chamado? | ⏳ |
-| 3 | `job.workflow_sha` = commit do kit? | ⏳ |
-| 4 | O output de um step que falhou chega a um job dependente? | ⏳ |
-| 5 | O nome do check do job chamador `checks` | ⏳ |
+| 1 | `github.event` é o do chamador? | ✅ sim: `push` (ref `main`), `pull_request` `opened` (merged `false`) e `closed` (merged `true`, head `feat/SBX-1-spike`), `workflow_dispatch` com `inputs.command=x`; `github.repository` e `event.repository` = sandbox |
+| 2 | `vars` chega no workflow chamado? | ✅ sim: `vars.SPIKE_VAR=1` (passamos tudo explicitamente mesmo assim) |
+| 3 | `job.workflow_sha` = commit do kit? | ✅ sim: `a206496` (topo de `spike/reusable`) nos 4 runs, e o checkout do kit nesse sha deu `HEAD=a206496`. ⚠️ `github.workflow_sha` é o do **chamador** (`76a7741`): use sempre `job.workflow_*` |
+| 4 | O output de um step que falhou chega a um job dependente? | ✅ sim: `needs.run.outputs.error=boom`, `result=failure` |
+| 5 | O nome do check do job chamador `checks` | ✅ `checks / run` e `checks / after` (`<job do chamador> / <job do kit>`), app 15368. No kit: `pr-checks / checks` e `pr-checks / conventions` |
+
+Runs (sandbox `Kaina-Ribeiro/release-kit-sandbox`, privado, 2026-11-05): push
+[42102105227](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42102105227), PR aberto
+[42102131557](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42102131557), PR mergeado
+[42102171618](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42102171618), dispatch
+[42102128633](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42102128633). Decisão: (1) e (3) "sim" →
+segue com workflows reutilizáveis; a Fase 4 lê o erro pelo output do step.
 
 ### Fase 1
 
@@ -613,9 +620,55 @@ Surpresas e decisões:
 
 ### Fase 3
 
+Branch `feat/reusable-workflows`, 2026-11-05. Commits: `bee9df5` (3.2), `4a1ab6a` (3.3), `5d3b1ea` (Spike F3).
+
+**Ciclo no sandbox** (`install.sh … --kit-ref feat/reusable-workflows`, sem `RELEASE_TOKEN`, sem Cubeship):
+
+| Passo | Run | Resultado |
+|:--|:--|:--|
+| `cut-release` (dispatch em `main`) | [42103390136](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42103390136) | ✅ `release/v0.1 branches from main` |
+| PR `feat/SBX-2-hello` → `release/v0.1` | [42103493415](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42103493415) | ✅ `pr-checks / checks` e `pr-checks / conventions` verdes |
+| Mesmo PR com o título `add hello` | [42103654398](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42103654398) | ✅ `conventions` vermelho: `title "add hello" must be type(TICKET): summary` |
+| Merge (squash) → push na linha | [42103727393](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42103727393) | ✅ `release / rc`: `v0.1.0-rc` + prerelease; `deploy-test` pulado (sem apps) |
+| Mesmo merge → PR fechado | [42103729787](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42103729787) | ✅ `release / cleanup`: apagou `feat/SBX-2-hello` |
+| `deploy` prod `dry_run`, a partir de `release/v0.1`, tag vazia | [42103831773](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42103831773) | ✅ `[dry-run] would set sandbox/prod/web to v0.1.0-rc` |
+| `deploy` prod `dry_run`, a partir da **tag** `v0.1.0-rc` | [42103847252](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42103847252) | ✅ o mesmo. Confirma `GITHUB_REF_TYPE=tag` num dispatch real (item da Fase 1) |
+| PR `release/v0.1` → `main` (merge) | [42103988335](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42103988335) / [42104069866](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42104069866) | ✅ checks verdes; `release / final`: `v0.1.0` + release Latest, branch apagado |
+
+`DEPLOY_PROD_APPS=sandbox/prod/web` existiu só durante os dois deploys (o `final` com prod configurado e sem Cubeship recusaria).
+
+Surpresas e decisões:
+
+- **Rulesets em repo privado:** o plano grátis responde HTTP 403 ("Upgrade to GitHub Pro or make this repository
+  public"). O teste do PUT de renomear os checks ficou para o primeiro repo real (ou o sandbox público, com o "sim").
+- **Os rulesets reais têm ajustes à mão** (bypass do admin em `pull_request`/`always`, o totem com 0 aprovações e nomes
+  `default branch`/`version lines`). Por isso o `install.sh` não faz PUT do arquivo do kit: ele lê cada ruleset de
+  branch, troca só `checks`/`conventions` por `pr-checks / …` e manda `{"rules": …}`. Simulado contra o totem
+  (PUT trocado por `echo`): pega os 2 rulesets certos e mantém o resto.
+- **Linhas abertas em 2026-11-05 (fim do dia):** npac `release/v0.8` (não mais `v0.7`), totem `release/v0.3`, ari
+  **nenhuma** (o `release/v0.1` já foi entregue). No ari o primeiro rc pelo `@v1` só sai depois de um `cut-release`.
+- O chamador de `pr-checks` se chama `pr-checks`; o do `release`, `release` (os checks aparecem como `release / rc` etc.).
+- `concurrency` do PR fica só no chamador: o mesmo grupo no chamado travaria o próprio run.
+- O `kit-release` só roda a partir da `master` e o `dry_run` vem ligado por padrão.
+- Fixtures: os dois modos com exit 0 e `✓ all expectations met` (107 passos + 21 check, `release.mjs` só mudou um
+  comentário).
+
+Revisor (subagente novo, só leitura, "skip style"): 4 achados, nenhum nos workflows reutilizáveis (batem com o
+`origin/master`, só `vars` → `inputs`).
+- ✅ #1 (médio): num upgrade, o `install.sh` ainda imprimia os POST dos rulesets (criaria um segundo `default-branch`
+  sem o bypass do repo). Agora o upgrade imprime só os passos a (apagar o script), b (renomear) e c (conferir).
+- ✅ #2 (médio): o PUT mandava só `{"rules": …}`, e não está documentado se o PUT parcial mantém `bypass_actors`. Agora
+  manda o ruleset inteiro (nome, alvo, enforcement, condições, bypass, regras) e o passo c lê de volta nomes e bypass.
+  Simulado contra o totem: os 2 rulesets de branch saem com os campos reais e os checks novos.
+- ✅ #3 (baixo): se o push do `v1` falhasse depois do `v1.0.0`, o re-run parava em "already exists". Agora um
+  `vX.Y.Z` no mesmo commit é re-run (pula a criação e move o `vX`); em outro commit, recusa. Testado em repo de
+  rascunho: versão nova, existente em outro commit, menor, fora da `master`, inválida e re-run.
+- #4 (baixo), sem mudança: `pull_request` (aprovação no `default-branch`) e `always` (linhas e tags em conta pessoal)
+  são regras de rulesets diferentes, e os 3 repos já estão assim.
+
 - O commit `4810e87` (branch `claude/fix-personal-rulesets-40ba86`, 2026-11-04, nunca mergeado) faz o
   `install.sh` tirar o bypass actor Integration 15368 nos repos de usuário, porque o GitHub responde HTTP 422
-  ali. A Task 3.3 precisa incorporar isso quando mexer nos rulesets e no `install.sh`.
+  ali. A Task 3.3 precisa incorporar isso quando mexer nos rulesets e no `install.sh`. ✅ Incorporado em `4a1ab6a`.
 
 ### Fase 4
 
