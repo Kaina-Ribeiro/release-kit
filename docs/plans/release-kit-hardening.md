@@ -322,7 +322,7 @@ expect_out ok "→ v0.1.2-hf (same code as v0.1.2-hf-rc)" final --head hotfix/v0
 
 ### Task 3.1: spike (descartável)
 
-**Status:** ⏳ pending. **Precisa do "sim" do dono** para criar o repo `Kaina-Ribeiro/release-kit-sandbox` (privado) e fazer push do branch `spike/reusable` no kit.
+**Status:** ✅ done (spike `a206496` em `spike/reusable`, descartável; resultados em Notas → Spike F3). Falta só apagar `spike/reusable` (com o "sim").
 
 - [ ] **Step 1:** no branch `spike/reusable` do kit, criar `.github/workflows/spike.yml` com `on: workflow_call` (input `command`, string) e dois jobs:
   - Job `run`: imprime `github.event_name`, `github.event.repository.full_name`, `github.ref_name`, `inputs.command`, `job.workflow_repository`, `job.workflow_sha` e `vars.SPIKE_VAR`. Depois um step `id: boom` grava `error=boom` em `GITHUB_OUTPUT` e faz `exit 1`. O job tem `outputs.error: ${{ steps.boom.outputs.error }}`.
@@ -347,7 +347,7 @@ expect_out ok "→ v0.1.2-hf (same code as v0.1.2-hf-rc)" final --head hotfix/v0
 
 ### Task 3.2: workflows reutilizáveis + chamadores
 
-**Status:** ⏳ pending
+**Status:** 🔄 in progress (bee9df5; falta o ciclo no sandbox)
 
 **Files:**
 - Create: `.github/workflows/release.yml` e `.github/workflows/pr-checks.yml` (reutilizáveis)
@@ -503,11 +503,18 @@ done
 
 | # | Pergunta | Resultado |
 |:--|:--|:--|
-| 1 | `github.event` é o do chamador? | ⏳ |
-| 2 | `vars` chega no workflow chamado? | ⏳ |
-| 3 | `job.workflow_sha` = commit do kit? | ⏳ |
-| 4 | O output de um step que falhou chega a um job dependente? | ⏳ |
-| 5 | O nome do check do job chamador `checks` | ⏳ |
+| 1 | `github.event` é o do chamador? | ✅ sim: `push` (ref `main`), `pull_request` `opened` (merged `false`) e `closed` (merged `true`, head `feat/SBX-1-spike`), `workflow_dispatch` com `inputs.command=x`; `github.repository` e `event.repository` = sandbox |
+| 2 | `vars` chega no workflow chamado? | ✅ sim: `vars.SPIKE_VAR=1` (passamos tudo explicitamente mesmo assim) |
+| 3 | `job.workflow_sha` = commit do kit? | ✅ sim: `a206496` (topo de `spike/reusable`) nos 4 runs, e o checkout do kit nesse sha deu `HEAD=a206496`. ⚠️ `github.workflow_sha` é o do **chamador** (`76a7741`): use sempre `job.workflow_*` |
+| 4 | O output de um step que falhou chega a um job dependente? | ✅ sim: `needs.run.outputs.error=boom`, `result=failure` |
+| 5 | O nome do check do job chamador `checks` | ✅ `checks / run` e `checks / after` (`<job do chamador> / <job do kit>`), app 15368. No kit: `pr-checks / checks` e `pr-checks / conventions` |
+
+Runs (sandbox `Kaina-Ribeiro/release-kit-sandbox`, privado, 2026-11-05): push
+[42102105227](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42102105227), PR aberto
+[42102131557](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42102131557), PR mergeado
+[42102171618](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42102171618), dispatch
+[42102128633](https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/42102128633). Decisão: (1) e (3) "sim" →
+segue com workflows reutilizáveis; a Fase 4 lê o erro pelo output do step.
 
 ### Fase 1
 
