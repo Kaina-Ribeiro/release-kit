@@ -184,6 +184,13 @@ function checkLine(branch) {
   return line;
 }
 
+// The branch of a tag's X.Y line: the hotfix once X.Y shipped, else the release.
+function lineOf(tag) {
+  const same = state().branches.filter((b) => b.major === tag.major && b.minor === tag.minor);
+  const kind = finalsOf(tag.major, tag.minor).length ? 'hotfix' : 'release';
+  return (same.find((b) => b.kind === kind) ?? same[0])?.name ?? `the v${tag.major}.${tag.minor} line`;
+}
+
 // Highest final tag contained in the default branch: what is in prod.
 function prodTag() {
   const head = remoteRef(defaultBranch());
@@ -688,6 +695,16 @@ function checkDeploy(name, prod) {
     if (last?.name !== name) {
       fail(`${name} is not the last rc of an open v${tag.major}.${tag.minor} line`
         + `${last ? ` (that is ${last.name})` : ''}; prod takes only the line's last rc or a final`);
+    }
+    // The default branch is what prod runs (e.g. a hotfix shipped meanwhile); an rc without it
+    // would take that away from prod. Once the line itself merged into the default branch (release
+    // day, prod deployed after the merge), that merge commit is not in the rc but its code is the
+    // rc's code, so nothing is lost.
+    const def = defaultBranch();
+    if (!isAncestor(remoteRef(def), name) && treeOf(remoteRef(def)) !== treeOf(name)) {
+      fail(`${name} lacks what ${def} has (${def} at ${commitOf(remoteRef(def)).slice(0, 12)}, `
+        + `prod ${prodTag()?.name ?? 'nothing'}): prod would lose it. `
+        + `Merge the open sync PR (or ${def}) into ${lineOf(tag)}, then deploy the new rc.`);
     }
     log(`✓ ${name} can go to prod (last rc of v${tag.major}.${tag.minor}; the merge will tag it ${fmt(tag.major, tag.minor, tag.patch)})`);
     return tag;

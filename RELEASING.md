@@ -42,7 +42,8 @@ How code moves from a pull request to production in this repository. The automat
    code, so it gets no rc (and no test deploy) until the first PR merges into it: a commit that
    already carries a release tag (final or rc, any line) never becomes an rc.
 4. **Release day**: prod gets the rc you tested, then the merge only records it.
-   1. Test the line's last rc on the test stage.
+   1. Merge any open sync PR into the release first (it brings what prod already has, such as a
+      shipped hotfix; prod refuses an rc without it). Then test the line's last rc on the test stage.
    2. Actions → Release → Run workflow, **from the release branch** → `deploy`, stage `prod`,
       tag empty (= the newest open release's last rc). Without deploys configured, deploy that rc
       with your own tool after `deploy-check <rc> --prod`.
@@ -65,8 +66,10 @@ pointing back at the previous tag.
 
 - Test stage: any `vX.Y.Z-rc` or `vX.Y.Z`, any time. Each new rc deploys there by itself; a
   push that makes no rc (a cut) deploys nothing.
-- Prod: the last rc of an open line (release day, before the merge), or a final `vX.Y.Z` whose
-  code equals its rc (rollback). An older rc is refused.
+- Prod: the last rc of an open line **that contains the default branch** (release day, before
+  the merge), or a final `vX.Y.Z` whose code equals its rc (rollback). An older rc is refused, and
+  so is an rc that lacks something the default branch has (e.g. a hotfix shipped meanwhile): prod
+  would lose it. Merge the open sync PR (or the default branch) into the line, then deploy the new rc.
 - The `final` tag is created only if prod already runs the line's last rc (when prod deploys
   are configured), so a final always names what prod runs.
 

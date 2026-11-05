@@ -165,7 +165,8 @@ expect_out ok "is already v0.3.0-rc.1; nothing to do" rc --branch release/v0.3 -
 commit_on release/v0.3 "feat(ABC-7): after the tag format change"
 expect_out ok "release/v0.3 → v0.3.1-rc (last rc v0.3.0-rc.1)" rc --branch release/v0.3 --dry-run
 expect_out ok "✓ v0.3.0-rc.1 can go to a test stage" deploy-check v0.3.0-rc.1
-expect_out ok "✓ v0.3.0-rc.1 can go to prod (last rc of v0.3; the merge will tag it v0.3.0)" deploy-check v0.3.0-rc.1 --prod
+echo "  (release/v0.3 lacks the hotfix v0.2.3 until section 9 merges $def into it)"
+expect_out fail "lacks what $def has" deploy-check v0.3.0-rc.1 --prod
 
 echo; echo "=== 8. deploys to a test stage (against test/cubeship-mock.mjs)"
 port=47123
@@ -181,7 +182,7 @@ expect ok deploy --stage test --dry-run
 expect ok deploy --stage test --branch release/v0.3
 expect ok deploy --stage test --branch release/v0.3
 expect_out fail "(that is v0.3.1-rc)" deploy --stage prod v0.3.0-rc.1
-expect ok deploy-check v0.3.1-rc --prod
+expect_out fail "lacks what $def has" deploy-check v0.3.1-rc --prod
 
 echo; echo "=== 8b. a deploy whose container does not stay up fails, though Cubeship says \"succeeded\""
 expect ok   deploy --stage test v0.3.1-rc --apps demo/test/api
@@ -216,6 +217,22 @@ c=$(git rev-parse 'v0.1.0-rc^{commit}'); git tag -d v0.1.0-rc >/dev/null; git ta
 expect ok status
 git remote set-url origin "$scratch/nowhere.git"
 expect_out fail "git fetch origin --tags --prune --force failed: fatal:" status
+
+echo; echo "=== 12. B2: prod refuses an rc that lacks what the default branch has"
+fresh b2
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): one"; tag v0.1.0-rc origin/release/v0.1
+merge_into_default release/v0.1; tag v0.1.0 "origin/$def"
+branch release/v0.2 "origin/$def"; commit_on release/v0.2 "feat(ABC-2): two"; tag v0.2.0-rc origin/release/v0.2
+branch hotfix/v0.1 v0.1.0; commit_on hotfix/v0.1 "fix(ABC-3): prod bug"; tag v0.1.1-rc origin/hotfix/v0.1
+expect ok deploy-check v0.1.1-rc --prod
+merge_into_default hotfix/v0.1; tag v0.1.1 "origin/$def"
+expect_out fail "v0.2.0-rc lacks what $def has" deploy-check v0.2.0-rc --prod
+expect ok deploy-check v0.2.0-rc
+git checkout --quiet -B release/v0.2 origin/release/v0.2
+git merge --quiet --no-ff -X ours "origin/$def" -m "Merge $def into release/v0.2"; git push --quiet origin release/v0.2
+tag v0.2.1-rc origin/release/v0.2
+expect ok deploy-check v0.2.1-rc --prod
+expect ok deploy-check v0.1.1 --prod
 
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
