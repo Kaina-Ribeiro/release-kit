@@ -8,10 +8,24 @@ How code moves from a pull request to production in this repository. The automat
 - **Default branch** (`master` or `main`) = what is in prod. Only `release/vX.Y` and
   `hotfix/vX.Y` merge into it.
 - **Version lines**: `release/vX.Y` is the next version; `hotfix/vX.Y` fixes what is in prod.
-- **Tags** follow SemVer: `vX.Y.Z-rc` is a release candidate, `vX.Y.Z` is shipped.
-- **Patch number**: every rc takes the next patch, and the final is the last rc without `-rc`.
-  `release/v0.2` tags `v0.2.0-rc`, `v0.2.1-rc`, `v0.2.2-rc` and ships `v0.2.2`; `hotfix/v0.2`
-  then tags `v0.2.3-rc`, … Older `vX.Y.Z-rc.N` tags are still read, never created.
+- **Tags**: a release candidate (rc) and a final (shipped) per line kind:
+
+  | Line | Candidates | Final |
+  |:--|:--|:--|
+  | `release/v1.29` | `v1.29.0-rc`, `v1.29.1-rc`, … | `v1.29.7` |
+  | `hotfix/v1.29` | `v1.29.8-hf-rc`, `v1.29.9-hf-rc`, … | `v1.29.9-hf` |
+
+- **Patch number**: every rc takes the next patch of X.Y, counted across its release and its
+  hotfix, and the final is the last rc's name without `-rc`. `release/v0.2` tags `v0.2.0-rc`,
+  `v0.2.1-rc`, `v0.2.2-rc` and ships `v0.2.2`; `hotfix/v0.2` then tags `v0.2.3-hf-rc`, … and
+  ships the last one, e.g. `v0.2.3-hf`.
+- **A `-hf` tag is a final** like `vX.Y.Z`: prod runs it, the next hotfix branches from it, a
+  rollback can deploy it, and its GitHub release is marked latest.
+- **Older tags are read, never created**: `vX.Y.Z-rc.N` candidates and hotfix tags from before
+  `-hf` (`vX.Y.Z-rc` → `vX.Y.Z` on a hotfix line). A hotfix in progress when the kit updated
+  gets `-hf-rc` from its next rc on, and its final follows the last rc's name.
+- For SemVer, `-hf` is a pre-release (`v1.29.9-hf` sorts before `v1.29.9`). The automation
+  orders tags itself (by X.Y.Z, the rc before the final); tools that sort by SemVer may not.
 - Tags, GitHub releases, new version lines and sync PRs are created **only by the automation**.
   Never create, move or delete a tag by hand.
 
@@ -59,10 +73,11 @@ How code moves from a pull request to production in this repository. The automat
       shipped branch, which GitHub closes with the branch, saying where its changes went.
 5. **Hotfix**: Actions → Release → `cut-hotfix` (branches from the final tag in prod; if the
    branch already exists it is reused; it gets its first rc with the first fix, never at the
-   final tag itself). Fix PRs into `hotfix/vX.Y` (squash) → test the rc →
-   `deploy` to prod, **run from `hotfix/vX.Y`** with the tag empty (= its last rc) → PR into the
-   default branch (merge commit) → the last rc's `vX.Y.Z`, the sync PR from the default branch
-   into the open release (as in 4.3), and the branch is deleted.
+   final tag itself). Fix PRs into `hotfix/vX.Y` (squash; each push tags the next
+   `vX.Y.Z-hf-rc`) → test the rc → `deploy` to prod, **run from `hotfix/vX.Y`** with the tag
+   empty (= its last rc) → PR into the default branch (merge commit) → the last rc ships as its
+   final (`vX.Y.Z-hf-rc` → `vX.Y.Z-hf`), the sync PR from the default branch into the open
+   release (as in 4.3), and the branch is deleted.
 6. **Sync PRs** (`chore(sync): merge A into B`, opened automatically): review and merge with a
    **merge commit**. There are two kinds: from a version line into the next open release (on
    each push to the line), and from the default branch into the first open release (after each
@@ -74,10 +89,11 @@ How code moves from a pull request to production in this repository. The automat
 Every stage runs a **tag**, never a branch: you always know what is live, and rollback is
 pointing back at the previous tag.
 
-- Test stage: any `vX.Y.Z-rc` or `vX.Y.Z`, any time. Each new rc deploys there by itself; a
-  push that makes no rc (a cut) deploys nothing.
+- Test stage: any release tag (`vX.Y.Z-rc`, `vX.Y.Z`, `vX.Y.Z-hf-rc` or `vX.Y.Z-hf`), any time.
+  Each new rc deploys there by itself; a push that makes no rc (a cut) deploys nothing.
 - Prod: the last rc of an open line **that contains the default branch** (release day, before
-  the merge), or a final `vX.Y.Z` whose code equals its rc (rollback). An older rc is refused, and
+  the merge), or a final (`vX.Y.Z` or `vX.Y.Z-hf`) whose code equals its rc (`vX.Y.Z-rc` or
+  `vX.Y.Z-hf-rc`: rollback). An older rc is refused, and
   so is an rc that lacks something the default branch has (e.g. a hotfix shipped meanwhile): prod
   would lose it. Merge the open sync PR (or the default branch) into the line, then deploy the new rc.
 - The `final` tag is created only if prod already runs the line's last rc (when prod deploys

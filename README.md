@@ -13,6 +13,17 @@ values. `RELEASING.md` holds the rules it enforces; it is copied into each repos
 | `rulesets/*.json` | GitHub settings | Default branch, version lines and `v*` tags |
 | `RELEASING.md` | `RELEASING.md` | The rules, for the people working on the repository |
 
+## Tags
+
+| Line | Candidates (one patch per rc, across release and hotfix) | Final (the last rc without `-rc`) |
+|:--|:--|:--|
+| `release/vX.Y` | `vX.Y.0-rc`, `vX.Y.1-rc`, … | `vX.Y.Z` |
+| `hotfix/vX.Y` | `vX.Y.Z-hf-rc` (the patch after the shipped final), … | `vX.Y.Z-hf` |
+
+A `-hf` final counts as a final everywhere (what prod runs, `cut-hotfix`, rollback, latest
+release). Older `vX.Y.Z-rc.N` candidates and hotfix tags from before `-hf` are read, never
+created; other `v*` tags (a manual `v1.0`) are ignored.
+
 ## Guards
 
 What the automation refuses or does on its own, beyond tagging (details in `RELEASING.md`):
@@ -58,8 +69,9 @@ and `check` asserts a file or git state. A step that misses prints `✗ MISS` an
 exit 1; a clean run ends with `✓ all expectations met`. Among others it covers: one rc per new
 commit, no rc for a cut at an already-tagged commit (section 2b and the hotfix in section 5), the
 deploy gate, legacy `-rc.N` tags, test/prod deploys and a deploy whose container crashloops or
-exits although Cubeship calls it "succeeded" (section 8b). Sections 11 and up each start from
-their own copy of the source and reproduce one bug.
+exits although Cubeship calls it "succeeded" (section 8b), and hotfix `-hf-rc` → `-hf` tags
+(section 5). Sections 11 and up each start from their own copy of the source and reproduce one
+bug; section 15 mixes legacy and manual tags with a hotfix that switches to `-hf` mid-way.
 
 It never pushes outside its scratch copy: it stops (exit 1) on a scratch dir that is not empty
 or a failed clone, checks that each clone's only remote is its scratch bare repo, and installs a
