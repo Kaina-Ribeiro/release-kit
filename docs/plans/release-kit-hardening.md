@@ -461,7 +461,7 @@ expect_out ok 'would open issue "Release automation failing: rc on hotfix/v0.2"'
 
 ### Task 4.2: job `report` no workflow reutilizável
 
-**Status:** ✅ done (`8cbc396`); `kit-release` 1.1.0 pendente
+**Status:** ✅ done (`8cbc396`, PR #13 `ade1b55`); kit `v1.1.0`, `v1` movido
 
 **Files:** Modify `.github/workflows/release.yml` (reutilizável); `RELEASING.md` (seção nova "When the automation fails")
 
@@ -747,3 +747,14 @@ o job `report` segue o desenho do plano.
 - `DEPLOY_TEST_APPS=,` faz o `deploy-test` rodar e passar sem Cubeship (o `if` do job vê um valor, o `release.mjs`
   não vê apps). Serve para provar o fechamento num repo sem deploy.
 - No mesmo run, `rc` imprimiu `✓ no open issue for rc on release/v0.2` e `final`/`cleanup` `nothing to report: … was skipped`.
+
+**Release do kit:** PR [#13](https://github.com/Kaina-Ribeiro/release-kit/pull/13) mergeado pelo dono (`ade1b55`, CI
+`fixtures` verde). `kit-release` 1.1.0: dry-run [42127092622](https://github.com/Kaina-Ribeiro/release-kit/actions/runs/42127092622)
+(`would tag v1.1.0 on ade1b55e1ed5 and move v1 to it`), real
+[42127630059](https://github.com/Kaina-Ribeiro/release-kit/actions/runs/42127630059) (`✓ v1.1.0 on ade1b55e1ed5; v1 moved
+to it`, suíte verde antes). Os 3 repos recebem o job `report` no próximo run do Release, sem PR.
+
+- Limpeza: branch `feat/failure-issues` apagado (local e remoto), worktree removido, `master` local = origin.
+- Sandbox: `DEPLOY_TEST_APPS` apagada. Ficam `SPIKE_VAR=1`, `feat/SBX-1-spike` e a `release/v0.2` (rc `v0.2.1-rc`),
+  lixo inofensivo. ⚠️ Os chamadores do sandbox apontam para `@feat/failure-issues`, que não existe mais: quem usar o
+  sandbox de novo roda `install.sh … --kit-ref <branch>` antes.
