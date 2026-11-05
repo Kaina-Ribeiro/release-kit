@@ -8,7 +8,9 @@
 //   sync         open "chore(sync): merge A into B" into the next open release line
 //   final        tag the line's last rc as final (v0.2.1-rc → v0.2.1) on the merge of a version line
 //                into the default branch, plus a release; refuses when prod does not run that rc
-//                (if DEPLOY_PROD_APPS is set); then deletes the shipped line's branch
+//                (if DEPLOY_PROD_APPS is set); then opens "chore(sync): merge <default> into <release>"
+//                if the next open release lacks the default branch, comments on the PRs still open
+//                from the shipped line, and deletes its branch
 //   cut-release  create the next release/vX.Y from the newest open release (or the default branch);
 //                refuses while that release's head has no rc yet
 //   cut-hotfix   create hotfix/vX.Y from the final tag in prod
@@ -16,7 +18,8 @@
 //   cleanup      delete a feature/fix branch once its PR is merged into a version line
 //                (version lines and the default branch are never deleted here)
 //   deploy-check gate a deploy: any release tag for test stages; --prod only for the last rc of an
-//                open line, or a final whose code equals its rc (rollback)
+//                open line that contains the default branch, or a final whose code equals its rc
+//                (rollback)
 //   deploy       deploy a release tag to the test or prod apps on Cubeship (passes deploy-check first),
 //                then fail unless each app's container comes up and stays up (see waitForHealthy)
 //   status       print the release state of the repo (read-only)
@@ -269,18 +272,19 @@ async function createRelease(tag, sha, previous, prerelease) {
   });
 }
 
+// The sync PR's number (the open one, or the one it opens); null under --dry-run.
 async function openSyncPr(source, target) {
   const title = `chore(sync): merge ${source} into ${target}`;
   const owner = (repoSlug() ?? '').split('/')[0];
   if (token() && owner) {
     const open = await api('GET', `/pulls?state=open&head=${owner}:${encodeURIComponent(source)}`
       + `&base=${encodeURIComponent(target)}`);
-    if (open.length) { log(`✓ sync PR already open: #${open[0].number} ${title}`); return; }
+    if (open.length) { log(`✓ sync PR already open: #${open[0].number} ${title}`); return open[0].number; }
   } else if (dryRun) {
     log('  (no GitHub token: skipping the check for an already-open sync PR)');
   }
   act(`open PR "${title}"`);
-  if (dryRun) return;
+  if (dryRun) return null;
   const pr = await api('POST', '/pulls', {
     title, head: source, base: target,
     body: [
@@ -291,6 +295,51 @@ async function openSyncPr(source, target) {
     ].join('\n'),
   });
   log(`✓ opened #${pr.number}`);
+  return pr.number;
+}
+
+// Comments on each open PR whose head is `head` (GitHub closes them once that branch is deleted).
+async function commentOnOpenPrs(head, body) {
+  const owner = (repoSlug() ?? '').split('/')[0];
+  if (dryRun && !(token() && owner)) {
+    log(`  (no GitHub token: skipping the check for open PRs from ${head})`);
+    act(`comment on open PRs from ${head}: "${body}"`);
+    return;
+  }
+  if (!owner) fail('cannot tell the GitHub repository; set GITHUB_REPOSITORY=owner/name');
+  const open = await api('GET', `/pulls?state=open&head=${owner}:${encodeURIComponent(head)}`);
+  if (!open.length) { log(`✓ no open PRs from ${head}`); return; }
+  act(`comment on open PRs from ${head}: "${body}"`);
+  if (dryRun) { log(`  (open: ${open.map((p) => `#${p.number}`).join(', ')})`); return; }
+  for (const pr of open) {
+    await api('POST', `/issues/${pr.number}/comments`, { body });
+    log(`✓ commented on #${pr.number}`);
+  }
+}
+
+// After a line ships, before its branch goes: the next open release must get the default branch
+// (now holding the shipped line), and the PRs still open from the shipped branch, which GitHub
+// closes with it, say where their changes went. The final tag is already out, so a GitHub error
+// here is a warning, never a failure.
+async function afterShip(head, tag, sha) {
+  const def = defaultBranch();
+  // The state was read before the tag, so `head` may still look open.
+  const next = openReleases().find((r) => r.name !== head);
+  let pr = null;
+  let synced = true;
+  if (next && !isAncestor(sha, remoteRef(next.name))) {
+    synced = false;
+    try { pr = await openSyncPr(def, next.name); } catch (err) {
+      warn(`could not open the sync PR from ${def} into ${next.name} (${err.cause?.code || err.message}); open it by hand`);
+    }
+  }
+  const where = !next ? `its changes are in ${def}.`
+    : synced ? `its changes are already in ${next.name}.`
+      : `its changes reach ${next.name} through ${pr ? `#${pr}` : 'the sync PR'}.`;
+  try { await commentOnOpenPrs(head, `Closed because ${head} shipped as ${tag}; ${where}`); } catch (err) {
+    warn(`could not comment on the open PRs from ${head} (${err.cause?.code || err.message})`);
+  }
+  deleteBranch(head);
 }
 
 // ---------- Cubeship (deploys) ----------
@@ -546,7 +595,7 @@ async function cmdFinal() {
   const shipped = finalsOf(line.major, line.minor).at(-1);
   if (shipped && commitOf(shipped.name) === sha) {
     log(`✓ ${shipped.name} already on ${sha.slice(0, 12)}`);
-    deleteBranch(head);
+    await afterShip(head, shipped.name, sha);
     return;
   }
   checkLine(head);
@@ -567,7 +616,7 @@ async function cmdFinal() {
   log(`${head} merged into ${def} → ${tag} (same code as ${lastRc.name})`);
   createTag(tag, sha, `Release ${tag} (from ${head}, same code as ${lastRc.name})`);
   await createRelease(tag, sha, previous, false);
-  deleteBranch(head);
+  await afterShip(head, tag, sha);
   outcome(`Shipped **${tag}** from \`${head}\` (same code as ${lastRc.name})`,
     `ship **${tag}** from \`${head}\` (same code as ${lastRc.name})`);
 }
@@ -673,6 +722,11 @@ function cmdConventions() {
       if (!isAncestor(remoteRef(def), headSha)) {
         errors.push(`${head} is behind ${def}: merge ${def} into ${head} first, so ${def} ships exactly a tested rc`);
       }
+    }
+  } else if (head === def && parseLine(base)) {
+    // A sync PR that brings what shipped (the default branch) into an open line.
+    if (!new RegExp(`^(${types})(\\([^)]+\\))?!?: \\S`).test(title)) {
+      errors.push(`title "${title}" is not Conventional Commits, e.g. "chore(sync): merge ${def} into ${base}"`);
     }
   } else {
     if (base === def) errors.push(`only release/vX.Y or hotfix/vX.Y can merge into ${def}; target a release line`);

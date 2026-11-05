@@ -22,7 +22,8 @@ How code moves from a pull request to production in this repository. The automat
   lowercase, e.g. `feat(ABC-12): add login`. The ticket must match the branch.
 - Types: `feat`, `fix`, `chore`, `refactor`, `perf`, `docs`, `test`, `ci`, `build`, `revert`.
 - PRs from a version line (release day, hotfix, sync) take any Conventional Commits title,
-  e.g. `chore(release): ship release/v0.2`.
+  e.g. `chore(release): ship release/v0.2`. So do sync PRs from the default branch into a
+  version line, e.g. `chore(sync): merge main into release/v0.3`.
 - A version line merges only into the default branch or a newer line (`hotfix/v0.2` →
   `release/v0.3`, never `release/v0.3` → `hotfix/v0.2`).
 - GitHub "Revert" PRs (`revert-123-…`, `Revert "…"`) are accepted as they come.
@@ -52,14 +53,21 @@ How code moves from a pull request to production in this repository. The automat
    3. PR `release/vX.Y` → default branch, **merge commit** (never squash or rebase). The release
       must contain the default branch first (the `conventions` check says so). The merge tags
       that rc's version as final (`v0.2.2-rc` → `v0.2.2`) with release notes, without deploying
-      again, and deletes the shipped branch.
+      again, and deletes the shipped branch. Before deleting it, if the next open release lacks
+      the default branch, it opens `chore(sync): merge <default> into release/vX.Y` (merge it
+      before that release's own release day), and it comments on each PR still open from the
+      shipped branch, which GitHub closes with the branch, saying where its changes went.
 5. **Hotfix**: Actions → Release → `cut-hotfix` (branches from the final tag in prod; if the
    branch already exists it is reused; it gets its first rc with the first fix, never at the
    final tag itself). Fix PRs into `hotfix/vX.Y` (squash) → test the rc →
    `deploy` to prod, **run from `hotfix/vX.Y`** with the tag empty (= its last rc) → PR into the
-   default branch (merge commit) → the last rc's `vX.Y.Z`, and the branch is deleted.
+   default branch (merge commit) → the last rc's `vX.Y.Z`, the sync PR from the default branch
+   into the open release (as in 4.3), and the branch is deleted.
 6. **Sync PRs** (`chore(sync): merge A into B`, opened automatically): review and merge with a
-   **merge commit**. On conflicts, resolve on a branch cut from the target, never on the source.
+   **merge commit**. There are two kinds: from a version line into the next open release (on
+   each push to the line), and from the default branch into the first open release (after each
+   ship, `chore(sync): merge <default> into release/vX.Y`). On conflicts, resolve on a branch cut
+   from the target, never on the source.
 
 ## Deploys
 
@@ -104,8 +112,16 @@ roll back by deploying the previous tag.
 ## When the automation refuses
 
 - **`final` refused, "differs from vX.Y.Z-rc"**: the default branch had changes the release
-  did not. Nothing was tagged. Merge the default branch into the version line with a PR (new rc),
-  then PR the line into the default branch again.
+  did not. Nothing was tagged. Merge the sync PR from the default branch
+  (`chore(sync): merge <default> into <line>`, or open one) into the version line (new rc), then
+  PR the line into the default branch again.
+- **`deploy` refused, "lacks what <default> has"**: the rc misses something prod already runs
+  (e.g. a hotfix shipped after the rc). Merge the open sync PR from the default branch into the
+  line, then deploy the new rc.
+- **`deploy` refused, "N lines are open"**: the run started from the default branch with the tag
+  empty, and more than one line could be meant. Run it from the line's branch, or pass the tag.
+- **`cut-release` refused, "has no rc yet"**: the newest release's last push is still being
+  tagged. Wait for its Release run, then cut again.
 - **`final` refused, "no rc"**: the line was never tagged as a candidate. Push a change to the
   line (or re-run its last Release run) so it gets an rc, then merge again.
 - **`final` refused, "prod does not run vX.Y.Z-rc"**: the release was merged before prod got its

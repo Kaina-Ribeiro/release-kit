@@ -24,6 +24,7 @@ if [ -z "$src" ]; then
   git -C "$src" -c user.name=tester -c user.email=tester@example.com -c core.autocrlf=false \
     commit --quiet -m "chore: initial commit"
 fi
+src=$(cd "$src" && pwd) # absolute: each section clones it again from its own directory
 
 # A bare copy of $src in <dir>/remote.git and a clone of it in <dir>/work; cd there.
 clone_into() { # dir
@@ -118,6 +119,8 @@ expect ok conventions --head revert-12-feat/ABC-3-login --base release/v0.2 --ti
 expect ok conventions --head release/v0.2 --base release/v0.3 --title "chore(sync): merge release/v0.2 into release/v0.3"
 expect ok conventions --head release/v0.2 --base "$def" --title "chore(release): ship release/v0.2"
 expect_out fail "release/v0.3 can merge only into $def or a newer line; release/v0.2 is older." conventions --head release/v0.3 --base release/v0.2 --title "chore(sync): merge release/v0.3 into release/v0.2"
+expect ok conventions --head "$def" --base release/v0.2 --title "chore(sync): merge $def into release/v0.2"
+expect_out fail "is not Conventional Commits" conventions --head "$def" --base release/v0.2 --title "merge"
 
 echo; echo "=== 3b. merged feature branches are deleted; version lines are kept"
 branch feat/ABC-3-login origin/release/v0.2
@@ -133,7 +136,13 @@ merge_into_default release/v0.2
 expect_out fail "differs from v0.2.1-rc" final --head release/v0.2 --dry-run
 tag v0.2.2-rc origin/release/v0.2
 expect_out ok "→ v0.2.2 (same code as v0.2.2-rc)" final --head release/v0.2 --dry-run
+echo "  (release/v0.3 lacks $def's merge, so shipping opens the sync PR before the branch goes)"
+expect_out ok "would open PR \"chore(sync): merge $def into release/v0.3\"" final --head release/v0.2 --dry-run
 tag v0.2.2 "origin/$def"
+echo "  (a re-run once the tag exists does not fail, still suggests the sync, and survives a GitHub outage)"
+expect_out ok "already on" final --head release/v0.2 --dry-run
+expect_out ok "would open PR \"chore(sync): merge $def into release/v0.3\"" final --head release/v0.2 --dry-run
+GH_TOKEN=x GITHUB_API_URL=http://127.0.0.1:9 expect_out ok "warning:" final --head release/v0.2 --dry-run
 expect_out fail "already shipped as v0.2.2" rc --branch release/v0.2 --dry-run
 
 echo; echo "=== 5. hotfix on v0.2"
@@ -148,7 +157,7 @@ expect ok rc --branch hotfix/v0.2 --dry-run
 tag v0.2.3-rc origin/hotfix/v0.2
 expect ok sync --branch hotfix/v0.2 --dry-run
 merge_into_default hotfix/v0.2
-expect ok final --head hotfix/v0.2 --dry-run
+expect_out ok "would open PR \"chore(sync): merge $def into release/v0.3\"" final --head hotfix/v0.2 --dry-run
 tag v0.2.3 "origin/$def"
 expect ok cut-hotfix --dry-run
 expect_out fail "is behind $def" conventions --head release/v0.3 --base "$def" --title "chore(release): ship release/v0.3"
