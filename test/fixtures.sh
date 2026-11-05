@@ -1,36 +1,73 @@
 #!/usr/bin/env bash
 # Exercises release.mjs --dry-run through a full release cycle on a throwaway copy of a repo.
-# Usage: test/fixtures.sh <source-repo> <empty-scratch-dir>
+# Usage: test/fixtures.sh [<source-repo>] <empty-scratch-dir>
+#   An empty <source-repo> ("") builds one in <scratch>/source: a single commit on main.
 # Creates <scratch>/remote.git (bare copy) and <scratch>/work (clone). Tags and branches that the
 # automation "would" create are simulated by hand inside that copy; the source repo is untouched.
+# Each later section starts from its own copy (fresh <name>: <scratch>/<name>/{remote.git,work}).
 # Candidates are vX.Y.Z-rc, one patch per rc (v0.2.0-rc, v0.2.1-rc, …); the final is the last rc.
+# Every step asserts its outcome (expect, expect_out, check); any miss makes the script exit 1.
 set -uo pipefail
 
 kit=$(cd "$(dirname "$0")/.." && pwd)
-src=${1:?source repo}
+src=${1-}
 scratch=${2:?scratch dir}
-unset GITHUB_ACTIONS GITHUB_REF_NAME GITHUB_SHA GITHUB_STEP_SUMMARY DEFAULT_BRANCH
+unset GITHUB_ACTIONS GITHUB_REF_NAME GITHUB_REF_TYPE GITHUB_SHA GITHUB_OUTPUT GITHUB_STEP_SUMMARY DEFAULT_BRANCH
 export GH_TOKEN= GITHUB_TOKEN= GITHUB_REPOSITORY=example/fixture
 
-git clone --quiet --bare "$src" "$scratch/remote.git"
-git clone --quiet "$scratch/remote.git" "$scratch/work"
-cd "$scratch/work"
-git config user.name tester
-git config user.email tester@example.com
-git config core.autocrlf false
-def=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')
+mkdir -p "$scratch"
+if [ -z "$src" ]; then
+  src="$scratch/source"
+  git init --quiet -b main "$src"
+  echo "fixture source" > "$src/README"
+  git -C "$src" add README
+  git -C "$src" -c user.name=tester -c user.email=tester@example.com -c core.autocrlf=false \
+    commit --quiet -m "chore: initial commit"
+fi
 
-r() { echo; echo "\$ release.mjs $*"; node "$kit/release.mjs" "$@"; echo "(exit $?)"; }
-# Like r, but checks the exit code: expect ok|fail <args>. Any miss makes the script exit 1.
+# A bare copy of $src in <dir>/remote.git and a clone of it in <dir>/work; cd there.
+clone_into() { # dir
+  git clone --quiet --bare "$src" "$1/remote.git"
+  git clone --quiet "$1/remote.git" "$1/work"
+  cd "$1/work"
+  git config user.name tester
+  git config user.email tester@example.com
+  git config core.autocrlf false
+  def=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')
+}
+# A new section's own copy of $src, so it never depends on the state the other sections left.
+fresh() { # name
+  mkdir -p "$scratch/$1"; clone_into "$scratch/$1"; echo "  [fixture] fresh copy $1 (default branch $def)"
+}
+
 misses=0
+miss() { echo "  ✗ MISS: $*"; misses=$((misses + 1)); }
+# expect ok|fail <args>: runs release.mjs and checks its exit code.
 expect() {
   local want=$1; shift
   echo; echo "\$ release.mjs $*   [expect $want]"; node "$kit/release.mjs" "$@"; local code=$?
   echo "(exit $code)"
   if { [ "$want" = ok ] && [ $code -ne 0 ]; } || { [ "$want" = fail ] && [ $code -eq 0 ]; }; then
-    echo "  ✗ MISS: expected $want"; misses=$((misses + 1))
+    miss "expected $want"
   fi
 }
+# expect_out ok|fail "<text>" <args>: like expect, and stdout+stderr must also contain <text>.
+expect_out() {
+  local want=$1 text=$2; shift 2
+  echo; echo "\$ release.mjs $*   [expect $want: \"$text\"]"
+  local out; out=$(node "$kit/release.mjs" "$@" 2>&1); local code=$?
+  printf '%s\n' "$out"; echo "(exit $code)"
+  if { [ "$want" = ok ] && [ $code -ne 0 ]; } || { [ "$want" = fail ] && [ $code -eq 0 ]; }; then
+    miss "expected $want"
+  fi
+  if ! printf '%s\n' "$out" | grep -qF -- "$text"; then miss "expected the output to contain \"$text\""; fi
+}
+# check "<description>" <command…>: the command must exit 0 (output files, git state).
+check() {
+  local what=$1; shift
+  if "$@"; then echo "  [check] $what"; else miss "check failed: $what"; fi
+}
+
 # What the automation would do, done by hand in the fixture.
 tag() { git -c user.name='github-actions[bot]' tag -a "$1" "$2" -m "$1"; git push --quiet origin "refs/tags/$1"; echo "  [fixture] tagged $1"; }
 branch() { git push --quiet origin "$(git rev-parse "$2^{commit}"):refs/heads/$1"; echo "  [fixture] created $1"; }
@@ -45,85 +82,87 @@ merge_into_default() { # line
   git push --quiet origin "$def"; echo "  [fixture] merged $1 into $def ($(git rev-parse --short HEAD))"
 }
 
+clone_into "$scratch"
+
 echo "=== 1. starting state"
-r status
-r cut-release --dry-run
+expect ok status
+expect ok cut-release --dry-run
 branch release/v0.2 "origin/$def"
 
 echo; echo "=== 2. features land on release/v0.2"
 commit_on release/v0.2 "feat(ABC-1): first feature"
-r rc --branch release/v0.2 --dry-run
+expect_out ok "release/v0.2 → v0.2.0-rc (first rc)" rc --branch release/v0.2 --dry-run
 tag v0.2.0-rc origin/release/v0.2
-GITHUB_OUTPUT="$scratch/out-rc" r rc --branch release/v0.2 --dry-run
-echo "  [output] $(cat "$scratch/out-rc")"
-r cut-release --dry-run
+GITHUB_OUTPUT="$scratch/out-rc" expect_out ok "is already v0.2.0-rc; nothing to do" rc --branch release/v0.2 --dry-run
+check "the rc step outputs tag=v0.2.0-rc" grep -qx 'tag=v0.2.0-rc' "$scratch/out-rc"
+expect ok cut-release --dry-run
 branch release/v0.3 origin/release/v0.2
 
 echo; echo "=== 2b. a cut at an already-tagged commit gets no rc, and its test deploy is a no-op"
-GITHUB_OUTPUT="$scratch/out-cut" r rc --branch release/v0.3 --dry-run
-echo "  [output] $(cat "$scratch/out-cut")"
-DEPLOY_TEST_APPS=demo/test/api r deploy --stage test --branch release/v0.3
+GITHUB_OUTPUT="$scratch/out-cut" expect_out ok "no new code on release/v0.3, no rc" rc --branch release/v0.3 --dry-run
+check "the rc step outputs an empty tag=" grep -qx 'tag=' "$scratch/out-cut"
+DEPLOY_TEST_APPS=demo/test/api expect ok deploy --stage test --branch release/v0.3
 commit_on release/v0.2 "fix(ABC-2): late fix"
-r rc --branch release/v0.2 --dry-run
+expect ok rc --branch release/v0.2 --dry-run
 tag v0.2.1-rc origin/release/v0.2
-r sync --branch release/v0.2 --dry-run
-r sync --branch release/v0.3 --dry-run
-r cut-release --version 0.2 --dry-run
+expect ok sync --branch release/v0.2 --dry-run
+expect ok sync --branch release/v0.3 --dry-run
+expect_out fail "must be newer than release/v0.3" cut-release --version 0.2 --dry-run
 
 echo; echo "=== 3. PR conventions"
-r conventions --head feat/ABC-3-login --base release/v0.2 --title "feat(ABC-3): add login"
-r conventions --head feature/login --base release/v0.2 --title "Add login"
-r conventions --head feat/ABC-3-login --base "$def" --title "feat(ABC-3): add login"
-r conventions --head feat/ABC-3-login --base release/v0.2 --title "feat(ABC-4): Add login"
-r conventions --head revert-12-feat/ABC-3-login --base release/v0.2 --title 'Revert "feat(ABC-3): add login"'
-r conventions --head release/v0.2 --base release/v0.3 --title "chore(sync): merge release/v0.2 into release/v0.3"
-r conventions --head release/v0.2 --base "$def" --title "chore(release): ship release/v0.2"
+expect ok conventions --head feat/ABC-3-login --base release/v0.2 --title "feat(ABC-3): add login"
+expect fail conventions --head feature/login --base release/v0.2 --title "Add login"
+expect fail conventions --head feat/ABC-3-login --base "$def" --title "feat(ABC-3): add login"
+expect fail conventions --head feat/ABC-3-login --base release/v0.2 --title "feat(ABC-4): Add login"
+expect ok conventions --head revert-12-feat/ABC-3-login --base release/v0.2 --title 'Revert "feat(ABC-3): add login"'
+expect ok conventions --head release/v0.2 --base release/v0.3 --title "chore(sync): merge release/v0.2 into release/v0.3"
+expect ok conventions --head release/v0.2 --base "$def" --title "chore(release): ship release/v0.2"
 
 echo; echo "=== 3b. merged feature branches are deleted; version lines are kept"
 branch feat/ABC-3-login origin/release/v0.2
-r cleanup --head feat/ABC-3-login --base release/v0.2 --dry-run
-r cleanup --head feat/ABC-3-login --base release/v0.2
-r cleanup --head feat/ABC-3-login --base release/v0.2
-r cleanup --head release/v0.2 --base release/v0.3
-r cleanup --head feat/ABC-3-login --base "$def"
+expect_out ok "would delete branch feat/ABC-3-login" cleanup --head feat/ABC-3-login --base release/v0.2 --dry-run
+expect_out ok "→ delete branch feat/ABC-3-login" cleanup --head feat/ABC-3-login --base release/v0.2
+expect_out ok "✓ feat/ABC-3-login is already gone" cleanup --head feat/ABC-3-login --base release/v0.2
+expect_out ok "✓ release/v0.2 is a version line or the default branch; kept" cleanup --head release/v0.2 --base release/v0.3
+expect_out ok "✓ $def is not a version line; nothing to clean" cleanup --head feat/ABC-3-login --base "$def"
 
 echo; echo "=== 4. release day, with an untested commit first"
 commit_on release/v0.2 "fix(ABC-5): untested"
 merge_into_default release/v0.2
-r final --head release/v0.2 --dry-run
+expect_out fail "differs from v0.2.1-rc" final --head release/v0.2 --dry-run
 tag v0.2.2-rc origin/release/v0.2
-r final --head release/v0.2 --dry-run
+expect_out ok "→ v0.2.2 (same code as v0.2.2-rc)" final --head release/v0.2 --dry-run
 tag v0.2.2 "origin/$def"
-r rc --branch release/v0.2 --dry-run
+expect_out fail "already shipped as v0.2.2" rc --branch release/v0.2 --dry-run
 
 echo; echo "=== 5. hotfix on v0.2"
-r cut-release --dry-run
-r cut-hotfix --dry-run
+expect ok cut-release --dry-run
+expect_out ok "in prod: v0.2.2; the hotfix's next rc will be v0.2.3-rc" cut-hotfix --dry-run
 branch hotfix/v0.2 v0.2.2
-r rc --branch hotfix/v0.2 --dry-run
+expect ok rc --branch hotfix/v0.2 --dry-run
 commit_on hotfix/v0.2 "fix(ABC-6): prod bug"
-r rc --branch hotfix/v0.2 --dry-run
+expect ok rc --branch hotfix/v0.2 --dry-run
 tag v0.2.3-rc origin/hotfix/v0.2
-r sync --branch hotfix/v0.2 --dry-run
+expect ok sync --branch hotfix/v0.2 --dry-run
 merge_into_default hotfix/v0.2
-r final --head hotfix/v0.2 --dry-run
+expect ok final --head hotfix/v0.2 --dry-run
 tag v0.2.3 "origin/$def"
-r cut-hotfix --dry-run
-r conventions --head release/v0.3 --base "$def" --title "chore(release): ship release/v0.3"
+expect ok cut-hotfix --dry-run
+expect_out fail "is behind $def" conventions --head release/v0.3 --base "$def" --title "chore(release): ship release/v0.3"
 
 echo; echo "=== 6. deploy gate"
-r deploy-check v0.2.3-rc
-r deploy-check v0.2.3-rc --prod
-r deploy-check v0.2.3 --prod
-r deploy-check release/v0.3
+expect_out ok "✓ v0.2.3-rc can go to a test stage" deploy-check v0.2.3-rc
+expect_out fail "is not the last rc" deploy-check v0.2.3-rc --prod
+expect_out ok "✓ v0.2.3 can go to prod (same code as v0.2.3-rc)" deploy-check v0.2.3 --prod
+expect_out fail "is not a release tag" deploy-check release/v0.3
 
 echo; echo "=== 7. legacy rc tags (vX.Y.Z-rc.N) are still read; new ones take the next patch"
 tag v0.3.0-rc.1 origin/release/v0.3
-r rc --branch release/v0.3 --dry-run
+expect_out ok "is already v0.3.0-rc.1; nothing to do" rc --branch release/v0.3 --dry-run
 commit_on release/v0.3 "feat(ABC-7): after the tag format change"
-r rc --branch release/v0.3 --dry-run
-r deploy-check v0.3.0-rc.1
-r deploy-check v0.3.0-rc.1 --prod
+expect_out ok "release/v0.3 → v0.3.1-rc (last rc v0.3.0-rc.1)" rc --branch release/v0.3 --dry-run
+expect_out ok "✓ v0.3.0-rc.1 can go to a test stage" deploy-check v0.3.0-rc.1
+expect_out ok "✓ v0.3.0-rc.1 can go to prod (last rc of v0.3; the merge will tag it v0.3.0)" deploy-check v0.3.0-rc.1 --prod
 
 echo; echo "=== 8. deploys to a test stage (against test/cubeship-mock.mjs)"
 port=47123
@@ -135,11 +174,11 @@ export CUBESHIP_URL="http://127.0.0.1:$port" CUBESHIP_TOKEN=test-key RELEASE_DEP
 export RELEASE_HEALTH_POLL_MS=50 RELEASE_HEALTH_STABLE_S=1 RELEASE_HEALTH_WAIT_S=2
 export DEPLOY_TEST_APPS="demo/test/api demo/test/web" DEPLOY_PROD_APPS="demo/prod/api,demo/prod/web"
 tag v0.3.1-rc origin/release/v0.3
-r deploy --stage test --dry-run
-r deploy --stage test --branch release/v0.3
-r deploy --stage test --branch release/v0.3
-r deploy --stage prod v0.3.0-rc.1
-r deploy-check v0.3.1-rc --prod
+expect ok deploy --stage test --dry-run
+expect ok deploy --stage test --branch release/v0.3
+expect ok deploy --stage test --branch release/v0.3
+expect_out fail "(that is v0.3.1-rc)" deploy --stage prod v0.3.0-rc.1
+expect ok deploy-check v0.3.1-rc --prod
 
 echo; echo "=== 8b. a deploy whose container does not stay up fails, though Cubeship says \"succeeded\""
 expect ok   deploy --stage test v0.3.1-rc --apps demo/test/api
@@ -155,17 +194,17 @@ git checkout --quiet -B release/v0.3 origin/release/v0.3
 git merge --quiet --no-ff -X ours "origin/$def" -m "Merge $def into release/v0.3"
 git push --quiet origin release/v0.3; echo "  [fixture] merged $def into release/v0.3"
 tag v0.3.2-rc origin/release/v0.3
-r deploy --stage test --branch release/v0.3
+expect ok deploy --stage test --branch release/v0.3
 merge_into_default release/v0.3
-r final --head release/v0.3 --dry-run
-r deploy --stage prod
-r final --head release/v0.3 --dry-run
+expect_out fail "prod does not run v0.3.2-rc" final --head release/v0.3 --dry-run
+expect ok deploy --stage prod
+expect_out ok "✓ prod runs v0.3.2-rc" final --head release/v0.3 --dry-run
 kill $mock 2>/dev/null
 unset CUBESHIP_URL CUBESHIP_TOKEN DEPLOY_TEST_APPS DEPLOY_PROD_APPS RELEASE_DEPLOY_POLL_MS
 unset RELEASE_HEALTH_POLL_MS RELEASE_HEALTH_STABLE_S RELEASE_HEALTH_WAIT_S
 
 echo; echo "=== 10. final state"
-r status
+expect ok status
 
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
