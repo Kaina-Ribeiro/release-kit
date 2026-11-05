@@ -8,10 +8,27 @@ values. `RELEASING.md` holds the rules it enforces; it is copied into each repos
 | File | Installed as | Does |
 |:--|:--|:--|
 | `release.mjs` | `.github/scripts/release.mjs` | `rc`, `final`, `sync`, `cleanup`, `cut-release`, `cut-hotfix`, `deploy` (fails unless each app stays up), `deploy-check`; `--dry-run` |
-| `workflows/release.yml` | `.github/workflows/release.yml` | rc + sync + test-stage deploy on push to a version line (none for a commit already tagged, e.g. a cut), branch cleanup on merge into a version line, final on merge into the default branch, cuts and deploys on dispatch |
+| `workflows/release.yml` | `.github/workflows/release.yml` | rc + sync + test-stage deploy on push to a version line (none for a commit already tagged, e.g. a cut), branch cleanup on merge into a version line, final on merge into the default branch (plus a sync PR from the default branch into the next open release), cuts and deploys on dispatch |
 | `workflows/pr-checks.yml` | `.github/workflows/pr-checks.yml` | `checks` (install, lint, typecheck) and `conventions` (branch name, PR title, target) |
 | `rulesets/*.json` | GitHub settings | Default branch, version lines and `v*` tags |
 | `RELEASING.md` | `RELEASING.md` | The rules, for the people working on the repository |
+
+## Guards
+
+What the automation refuses or does on its own, beyond tagging (details in `RELEASING.md`):
+
+- **Deploy with the tag empty** takes the last rc of the line the run starts from, or the tag it
+  starts from. From the default branch it takes the only open line, and refuses when more than
+  one is open (e.g. a hotfix and a release).
+- **Prod** takes an rc only if it contains the default branch, so a hotfix already in prod is
+  never lost; merge the sync PR first.
+- **`cut-release`** from an open release refuses while that release's head has no rc yet, and an
+  rc is skipped only for a commit that carries a final or an older line's rc.
+- **A version line** merges only into the default branch or a newer line.
+- **Shipping a line** (`final`) opens `chore(sync): merge <default> into <next release>` when that
+  release lacks it, and comments on the PRs still open from the shipped branch before deleting it.
+- **A git command that fails** reports git's own message, and the tag fetch replaces stale local
+  tags (the remote is the truth).
 
 ## Install into a repository
 
