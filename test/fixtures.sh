@@ -524,6 +524,25 @@ check "and the final still tags" grep -qF "→ v0.1.0 (same code as v0.1.0-rc)" 
 DEPLOY_PROD_APPS=boom expect_out fail "boom: the deploy command exited with 3" final --head release/v0.1 --dry-run
 unset DEPLOY_COMMAND DEPLOY_STATE
 
+echo; echo "=== 20. callers: no deploy button in Release, a Deploy workflow of its own"
+rel="$kit/workflows/release.yml"; dep="$kit/workflows/deploy.yml"; kitrel="$kit/.github/workflows/release.yml"
+check "the release caller offers only the cuts" grep -qF "options: [cut-release, cut-hotfix]" "$rel"
+check "the release caller has no stage or tag input" not grep -qE "inputs\.(stage|tag)" "$rel"
+check "the deploy caller runs the kit's deploy" grep -qE "^      command: deploy$" "$dep"
+check "the deploy caller is a manual workflow only" not grep -qE "^  (push|pull_request):" "$dep"
+check "no caller names Cubeship" not grep -rqi cubeship "$kit/workflows"
+for f in "$rel" "$dep"; do
+  for key in $(sed -n '/^    with:/,/^    secrets:/p' "$f" | grep -oE '^      [a-z_]+' | tr -d ' '); do
+    check "$(basename "$f") passes $key, which the kit declares" grep -qE "^      $key:$" "$kitrel"
+  done
+  for key in $(sed -n '/^    secrets:/,$p' "$f" | grep -oE '^      [a-z_]+' | tr -d ' '); do
+    check "$(basename "$f") passes the secret $key, which the kit declares" grep -qE "^      $key:$" "$kitrel"
+  done
+done
+for name in DEPLOY_ADAPTER DEPLOY_COMMAND DEPLOY_URL DEPLOY_TOKEN CUBESHIP_URL CUBESHIP_TOKEN; do
+  check "the kit's workflow sets $name" grep -qE "^  $name: " "$kitrel"
+done
+
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
 echo "✓ all expectations met"

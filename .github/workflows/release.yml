@@ -14,9 +14,12 @@
 # Token: secrets.release_token if set (a GitHub App token or an admin's fine-grained PAT), else the
 # caller's GITHUB_TOKEN. With GITHUB_TOKEN, sync PRs, tags and branches it creates do not trigger
 # other workflows, so required checks never run on sync PRs. See RELEASING.md, "Setup".
-# Deploys (optional): cubeship_url, deploy_test_apps, deploy_prod_apps and secrets.cubeship_token.
-# Without deploy_*_apps nothing is deployed. A deploy fails unless each app's container stays up
-# afterwards; health_stable_s / health_wait_s tune that.
+# Deploys (optional), through a deploy adapter in adapters/: deploy_test_apps and deploy_prod_apps
+# list the targets, in order; without them nothing is deployed. deploy_adapter picks the adapter
+# (empty: command when deploy_command is set, else cubeship). The command adapter runs the
+# project's deploy_command; the cubeship adapter uses deploy_url and secrets.deploy_token (or the
+# older cubeship_url and secrets.cubeship_token), and fails a deploy unless each app's container
+# stays up afterwards (health_stable_s / health_wait_s tune that).
 name: Release
 
 on:
@@ -42,6 +45,18 @@ on:
         description: Only print what would happen
         type: boolean
         default: false
+      deploy_adapter:
+        description: 'cubeship or command. Empty = command when deploy_command is set, else cubeship.'
+        type: string
+        default: ''
+      deploy_command:
+        description: 'The command adapter: the project''s deploy script, run from its root.'
+        type: string
+        default: ''
+      deploy_url:
+        description: 'The cubeship adapter: the Cubeship API.'
+        type: string
+        default: ''
       cubeship_url:
         type: string
         default: ''
@@ -60,12 +75,18 @@ on:
     secrets:
       release_token:
         required: false
+      deploy_token:
+        required: false
       cubeship_token:
         required: false
 
 env:
   DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
   GH_TOKEN: ${{ secrets.release_token || github.token }}
+  DEPLOY_ADAPTER: ${{ inputs.deploy_adapter }}
+  DEPLOY_COMMAND: ${{ inputs.deploy_command }}
+  DEPLOY_URL: ${{ inputs.deploy_url }}
+  DEPLOY_TOKEN: ${{ secrets.deploy_token }}
   CUBESHIP_URL: ${{ inputs.cubeship_url }}
   CUBESHIP_TOKEN: ${{ secrets.cubeship_token }}
   DEPLOY_TEST_APPS: ${{ inputs.deploy_test_apps }}

@@ -577,7 +577,8 @@ async function checkProdRuns(rc, apps, tag) {
   }
   if (behind.length) {
     fail(`prod does not run ${rc}: ${behind.join(', ')}; not tagging ${tag}. `
-      + `Fix: Actions → Release → deploy, stage prod, tag ${rc}; then re-run this job.`);
+      + `Fix: deploy ${rc} to prod (Actions → Deploy, stage prod; on an older install: Actions → Release → deploy), `
+      + 'then re-run this job.');
   }
   if (checked.length) log(`✓ prod runs ${rc}: ${checked.join(', ')}`);
 }
