@@ -554,6 +554,29 @@ TICKET_PATTERN=none expect_out fail 'must be <type>/short-name, e.g. feat/login'
 TICKET_PATTERN=none expect_out fail 'must be type: summary, e.g. feat: add login' conventions --head feat/login --base release/v0.4 --title "add login" --no-fetch
 expect_out fail 'must be <type>/<TICKET>-short-name' conventions --head feat/login --base release/v0.4 --title "feat: add login" --no-fetch
 
+echo; echo "=== 22. checks.sh: the project's own command, or the Node flow"
+run_checks() { ( cd "$1" && shift && env "$@" bash "$kit/checks.sh" ) 2>&1; }
+mkdir "$scratch/checks-cmd"
+out=$(run_checks "$scratch/checks-cmd" CHECKS_COMMAND='echo ran > marker'); code=$?
+check "CHECKS_COMMAND runs from the project root" [ "$code" -eq 0 -a -e "$scratch/checks-cmd/marker" ]
+out=$(run_checks "$scratch/checks-cmd" CHECKS_COMMAND='false; echo after > marker2'); code=$?
+check "a failing step fails the check and stops it" [ "$code" -ne 0 -a ! -e "$scratch/checks-cmd/marker2" ]
+mkdir "$scratch/checks-node"
+echo '{"scripts":{"lint":"x"}}' > "$scratch/checks-node/package.json"; : > "$scratch/checks-node/package-lock.json"
+out=$(run_checks "$scratch/checks-node" CHECKS_DRY_RUN=1 CHECKS_SCRIPTS="lint typecheck"); code=$?; printf '%s\n' "$out"
+check "the Node flow installs" grep -qxF "+ npm ci" <<<"$out"
+check "the Node flow runs the scripts that exist" grep -qxF "+ npm run lint" <<<"$out"
+check "the Node flow skips the ones that do not" grep -qF 'no "typecheck" script' <<<"$out"
+out=$(run_checks "$scratch/checks-node" CHECKS_DRY_RUN=1 CHECKS_COMMAND='echo mine'); printf '%s\n' "$out"
+check "CHECKS_COMMAND replaces the Node flow" not grep -qF "npm" <<<"$out"
+mkdir "$scratch/checks-none"
+out=$(run_checks "$scratch/checks-none"); code=$?
+check "no package.json, no command: passes with a notice" [ "$code" -eq 0 ]
+check "it says so" grep -qF "No package.json found" <<<"$out"
+check "the workflow moves the kit out of the workspace before the checks" \
+  grep -qF 'mv .release-kit "$RUNNER_TEMP/release-kit"' "$kit/.github/workflows/pr-checks.yml"
+check "the caller passes CHECKS_COMMAND" grep -qF 'checks_command: ${{ vars.CHECKS_COMMAND }}' "$kit/workflows/pr-checks.yml"
+
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
 echo "✓ all expectations met"
