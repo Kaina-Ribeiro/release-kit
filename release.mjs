@@ -395,7 +395,7 @@ async function afterShip(head, tag, sha) {
 // The deploy adapters, in adapters/<name>.mjs beside this file. The kit keeps the rules (which tag
 // may go where, the targets in order, stop at the first failure, the final's check of prod); the
 // adapter deploys a tag to a target and says what a target runs.
-const ADAPTERS = ['cubeship'];
+const ADAPTERS = ['cubeship', 'command'];
 
 function stageApps(stage) {
   const raw = opts.apps ?? process.env[stage === 'prod' ? 'DEPLOY_PROD_APPS' : 'DEPLOY_TEST_APPS'] ?? '';
@@ -403,14 +403,15 @@ function stageApps(stage) {
 }
 
 const adapterSet = () => (process.env.DEPLOY_ADAPTER ?? '').trim();
-// DEPLOY_ADAPTER when set; else cubeship (installs from before the adapters).
+// DEPLOY_ADAPTER when set; else command when DEPLOY_COMMAND is set; else cubeship (the only
+// adapter before there were adapters, so older installs keep deploying).
 function adapterName() {
   const name = adapterSet();
   if (name) {
     if (!ADAPTERS.includes(name)) fail(`DEPLOY_ADAPTER must be one of: ${ADAPTERS.join(', ')}; got "${name}"`);
     return name;
   }
-  return 'cubeship';
+  return (process.env.DEPLOY_COMMAND ?? '').trim() ? 'command' : 'cubeship';
 }
 
 const repoRoot = () => git('rev-parse', '--show-toplevel');
@@ -555,19 +556,30 @@ async function cmdFinal() {
 }
 
 // The final only records what prod already runs: the line's last rc, deployed before the merge.
+// A target whose adapter cannot tell what it runs (an empty `current` from a deploy command) is
+// not checked: a warning, in the log and the job summary, and the final goes on.
 async function checkProdRuns(rc, apps, tag) {
   const adapter = await readyAdapter();
   if (!adapter) { log(`  (no deploy credentials: skipping the check that prod runs ${rc})`); return; }
   const behind = [];
+  const checked = [];
   for (const target of apps) {
     const { runs, current } = await adapter.runs(target, rc, 'prod');
-    if (!runs) behind.push(`${target} (${current})`);
+    if (runs === null) {
+      const msg = `${target}: the deploy command does not say what it runs; not checking that prod runs ${rc}`;
+      warn(msg);
+      summary(msg);
+    } else if (runs) {
+      checked.push(target);
+    } else {
+      behind.push(`${target} (${current})`);
+    }
   }
   if (behind.length) {
     fail(`prod does not run ${rc}: ${behind.join(', ')}; not tagging ${tag}. `
       + `Fix: Actions → Release → deploy, stage prod, tag ${rc}; then re-run this job.`);
   }
-  log(`✓ prod runs ${rc}: ${apps.join(', ')}`);
+  if (checked.length) log(`✓ prod runs ${rc}: ${checked.join(', ')}`);
 }
 
 async function cmdCutRelease() {

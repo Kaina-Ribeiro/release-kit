@@ -500,6 +500,30 @@ check "a deploy from release.mjs alone says the adapter is missing" grep -qF "is
 kill $cubemock 2>/dev/null
 unset DEPLOY_TEST_APPS RELEASE_DEPLOY_POLL_MS RELEASE_HEALTH_POLL_MS RELEASE_HEALTH_STABLE_S RELEASE_HEALTH_WAIT_S
 
+echo; echo "=== 19. the command adapter: the project's own script deploys and says what runs"
+fresh cmdadapter
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): first"; tag v0.1.0-rc origin/release/v0.1
+export DEPLOY_COMMAND="bash $kit/test/deploy-command.sh" DEPLOY_STATE="$scratch/cmd-state"; mkdir "$DEPLOY_STATE"
+rc_sha=$(git rev-parse 'v0.1.0-rc^{commit}')
+DEPLOY_TEST_APPS="web api" expect_out ok "✓ api runs v0.1.0-rc" deploy --stage test --branch release/v0.1
+check "both targets, in order, with tag and commit" \
+  [ "$(tr '\n' ';' < "$DEPLOY_STATE/log")" = "test web v0.1.0-rc $rc_sha;test api v0.1.0-rc $rc_sha;" ]
+DEPLOY_TEST_APPS="bad api2" expect_out fail "bad: the deploy command exited with 1" deploy --stage test v0.1.0-rc
+check "the target after a failure is not deployed" [ ! -e "$DEPLOY_STATE/test-api2" ]
+DEPLOY_TEST_APPS=web2 expect_out ok "would run: bash $kit/test/deploy-command.sh deploy test web2 v0.1.0-rc" deploy --stage test v0.1.0-rc --dry-run
+check "a dry run deploys nothing" [ ! -e "$DEPLOY_STATE/test-web2" ]
+RELEASE_DEPLOY_TIMEOUT_MS=300 DEPLOY_TEST_APPS=slow expect_out fail "slow: the deploy command is still running after" deploy --stage test v0.1.0-rc
+DEPLOY_ADAPTER=cubeship DEPLOY_TEST_APPS=web expect_out fail "the cubeship deploy adapter needs" deploy --stage test v0.1.0-rc
+merge_into_default release/v0.1
+DEPLOY_PROD_APPS=web expect_out fail "prod does not run v0.1.0-rc: web (none)" final --head release/v0.1 --dry-run
+DEPLOY_PROD_APPS="web sha" expect ok deploy --stage prod v0.1.0-rc
+DEPLOY_PROD_APPS="web sha" expect_out ok "✓ prod runs v0.1.0-rc: web, sha" final --head release/v0.1 --dry-run
+out=$(DEPLOY_PROD_APPS=mute node "$kit/release.mjs" final --head release/v0.1 --dry-run 2>&1); printf '%s\n' "$out"
+check "an empty answer warns" grep -qF "mute: the deploy command does not say what it runs" <<<"$out"
+check "and the final still tags" grep -qF "→ v0.1.0 (same code as v0.1.0-rc)" <<<"$out"
+DEPLOY_PROD_APPS=boom expect_out fail "boom: the deploy command exited with 3" final --head release/v0.1 --dry-run
+unset DEPLOY_COMMAND DEPLOY_STATE
+
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
 echo "✓ all expectations met"
