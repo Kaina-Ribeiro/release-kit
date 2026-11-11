@@ -366,16 +366,16 @@ Decisões:
 
 ### Task 3.1: ciclo no sandbox
 
-**Status:** ⏳ pending
+**Status:** ✅ done (2026-11-11; ver Notas, Fase 3)
 
 Sandbox: `Kaina-Ribeiro/release-kit-sandbox` (privado, usado no hardening).
 
-- [ ] **Step 1:** com o "sim", push de `feat/generic-kit`.
-- [ ] **Step 2:** num clone limpo do sandbox, instalar com o comando único apontando para o branch: `curl -fsSL https://raw.githubusercontent.com/Kaina-Ribeiro/release-kit/feat/generic-kit/install.sh | bash -s -- . --force --kit-ref feat/generic-kit`. Conferir os arquivos e, com o "sim", abrir e mergear o PR deles.
-- [ ] **Step 3 (só tags):** Actions → Release mostra só `cut-release`, `cut-hotfix`, `version`, `dry_run`. Não existe workflow Deploy. Um ciclo `cut-release` → PR → rc → merge → final fica verde, sem job de deploy rodando.
-- [ ] **Step 4 (checks e tickets):** variáveis `CHECKS_COMMAND=echo ok` e `TICKET_PATTERN=none`; um PR `feat/sandbox-check` com título `feat: check the generic kit` passa nos dois checks. Depois, `CHECKS_COMMAND=false` reprova `pr-checks / checks`.
-- [ ] **Step 5 (deploy por comando):** reinstalar com `--deploy`; um `scripts/deploy.sh` de teste no sandbox (`deploy` só imprime o que recebeu; `current` não imprime nada, porque um runner não guarda estado de um job para o outro); variáveis `DEPLOY_COMMAND`, `DEPLOY_TEST_APPS=web`, `DEPLOY_PROD_APPS=web`. O rc seguinte roda o `deploy-test`; Actions → Deploy, stage `prod`, fica verde; o `final` seguinte mostra o aviso `does not say what it runs` e cria a tag. Conferir que `permissions: contents: read` basta no `deploy.yml`; se o GitHub recusar, usar o bloco de permissões do `release.yml` e anotar.
-- [ ] **Step 6:** anotar em **Notas** os links dos runs e qualquer desvio.
+- [x] **Step 1:** com o "sim", push de `feat/generic-kit`.
+- [x] **Step 2:** num clone limpo do sandbox, instalar com o comando único apontando para o branch: `curl -fsSL https://raw.githubusercontent.com/Kaina-Ribeiro/release-kit/feat/generic-kit/install.sh | bash -s -- . --force --kit-ref feat/generic-kit`. Conferir os arquivos e, com o "sim", abrir e mergear o PR deles.
+- [x] **Step 3 (só tags):** Actions → Release mostra só `cut-release`, `cut-hotfix`, `version`, `dry_run`. Não existe workflow Deploy. Um ciclo `cut-release` → PR → rc → merge → final fica verde, sem job de deploy rodando.
+- [x] **Step 4 (checks e tickets):** variáveis `CHECKS_COMMAND=echo ok` e `TICKET_PATTERN=none`; um PR `feat/sandbox-check` com título `feat: check the generic kit` passa nos dois checks. Depois, `CHECKS_COMMAND=false` reprova `pr-checks / checks`.
+- [x] **Step 5 (deploy por comando):** reinstalar com `--deploy`; um `scripts/deploy.sh` de teste no sandbox (`deploy` só imprime o que recebeu; `current` não imprime nada, porque um runner não guarda estado de um job para o outro); variáveis `DEPLOY_COMMAND`, `DEPLOY_TEST_APPS=web`, `DEPLOY_PROD_APPS=web`. O rc seguinte roda o `deploy-test`; Actions → Deploy, stage `prod`, fica verde; o `final` seguinte mostra o aviso `does not say what it runs` e cria a tag. Conferir que `permissions: contents: read` basta no `deploy.yml`; se o GitHub recusar, usar o bloco de permissões do `release.yml` e anotar.
+- [x] **Step 6:** anotar em **Notas** os links dos runs e qualquer desvio.
 
 ### Task 3.2: PR, release `v1.2.0` e conferência
 
@@ -452,3 +452,42 @@ Em aberto (para a Fase 3):
 - ⚠️ **Job `checks` no GitHub:** o kit é movido com `mv` depois do `actions/checkout` com `path: .release-kit`. Conferir no sandbox (Task 3.1, passo 4) que o passo de limpeza do checkout não reclama da pasta ausente (com `persist-credentials: false` não deve haver o que limpar).
 - Menor: o `curl | bash` executa o script à medida que chega; um download cortado no meio rodaria só o começo. O pior caso é texto impresso pela metade: o laço que copia é um comando composto (lido inteiro antes de rodar) e só roda depois de todos os arquivos baixados. Se quiser blindar, envolver o corpo em `{ … }`.
 - O processo órfão no tempo esgotado do adaptador `command` (Notas da Fase 1) continua em aberto.
+
+### Fase 3, Task 3.1 (2026-11-11) ✅
+
+Sandbox `Kaina-Ribeiro/release-kit-sandbox`, chamadores fixados em `@feat/generic-kit` (kit em `4dcd004`). Todos os links são `https://github.com/Kaina-Ribeiro/release-kit-sandbox/actions/runs/<id>`.
+
+| Passo | O quê | Run | Resultado |
+|:--|:--|:--|:--|
+| Install | PR #5 `chore/SBX-5-generic-kit` → `main` | 43084849974 | ❌ esperado: `conventions` = "only release/vX.Y or hotfix/vX.Y can merge into main" |
+| Install | o mesmo PR → `release/v0.2` | 43085027792 | ✅ checks + conventions; squash |
+| Só tags | rc na `release/v0.2` com os chamadores novos | 43086177146 | ✅ `v0.2.2-rc`; `deploy-test` skipped |
+| Só tags | PR #7 `main` → `release/v0.2` (conflito resolvido na linha) | 43086463166 | ✅ `v0.2.3-rc` |
+| Só tags | `cut-release` dry run | 43086615530 | ✅ "would create branch release/v0.3" |
+| Só tags | `cut-release` real | 43086704145 | ✅ `release/v0.3` |
+| Só tags | PR #8 `release/v0.2` → `main` (final) | 43086918887 | ✅ `v0.2.3`, sync PR #9 aberto, branch apagado |
+| Só tags | merge do sync PR #9 → rc na `release/v0.3` | 43087082242 | ✅ `v0.3.0-rc` |
+| Checks | `CHECKS_COMMAND=echo ok`, `TICKET_PATTERN=none`, PR #6 `feat/sandbox-check` "feat: check the generic kit" | 43085191709 | ✅ os dois checks (`+ echo ok`, `✓ conventions ok`) |
+| Checks | `CHECKS_COMMAND=false` | 43085297325 | ❌ esperado: `checks` vermelho, `conventions` verde |
+| Deploy | PR #10 reinstalar `--deploy` + `scripts/deploy.sh` → rc + `deploy-test` | 43087951383 | ✅ `v0.3.1-rc`; `deploy.sh deploy stage=test target=web tag=v0.3.1-rc` |
+| Deploy | PR #11 `release/v0.3` → `main` (final) | 43088318122 | ✅ `##[warning]web: the deploy command does not say what it runs; …`, tag `v0.3.1` |
+| Deploy | `cut-release` → `release/v0.4`; PR #12 → rc + `deploy-test` | 43088479444, 43088653520 | ✅ `v0.4.0-rc` |
+| Deploy | Actions → Deploy, stage `prod`, da `release/v0.4` | 43088844002 | ✅ `GITHUB_TOKEN Permissions: Contents: read, Metadata: read`; `✓ web runs v0.4.0-rc` |
+| Deploy | PR #13 `release/v0.4` → `main` (final) | 43089053008 | ✅ aviso `does not say what it runs`, tag `v0.4.0` |
+| Timeout | workflow descartável `probe/timeout` (adaptador `command`, timeout 5 s, comando de 60 s) | 43087588586 | ✅ ver abaixo |
+
+Conferido também:
+- `gh workflow list` no modo só tags: `PR checks` e `Release`, sem Deploy. O chamador do Release oferece só `cut-release`/`cut-hotfix`, `version`, `dry_run`.
+- Job `checks`: o `mv .release-kit "$RUNNER_TEMP/release-kit"` não gera erro nem aviso no pós-passo do checkout (só o `DEP0040 punycode` do próprio Node da action, que sai em todo passo). O item em aberto da Fase 2 está fechado.
+
+Desvios e achados:
+- **Instalar pela `main` não passa no `conventions`** (por desenho: só linhas entram na branch padrão). Num repo com rulesets o dono instala com bypass de admin; sem bypass, o PR do install vai para a linha aberta e chega à `main` no release day. Sem mudança no kit; vale uma linha no README/RELEASING sobre onde abrir o PR do install.
+- **`cut-release` corta da linha aberta mais nova**, não da `main`: com a `release/v0.2` antiga aberta, a linha nova herdaria os chamadores velhos. Resolvido instalando na própria `release/v0.2`.
+- ⚠️ **Actions → Deploy só existe com o `deploy.yml` na branch padrão.** Com o arquivo só na linha, `gh workflow run deploy.yml --ref release/v0.3` dá `HTTP 404: workflow deploy.yml not found on the default branch`. Consequência: quem liga deploys por um PR numa linha só tem o botão depois do primeiro ship; até lá o `final` avisa ou recusa (com `current` que responde, recusaria com `prod does not run`). Sem mudança no kit agora; documentar no RELEASING ("Deploys": o `deploy.yml` precisa estar na branch padrão antes do release day).
+- ⚠️ **Sync PR aberto pelo `GITHUB_TOKEN` ganha um `PR checks` vermelho, não ausente.** O PR #9 (`chore(sync): merge main into release/v0.3`, aberto pelo kit) disparou o `PR checks` com ator `github-actions[bot]`, que falhou no início ("This run likely failed because of a workflow file issue", 0 jobs; run 43086979268, tentativa 1). Um re-run pelo dono passou verde (tentativa 2). Comportamento do GitHub, não bug do kit; o comentário do chamador diz que os checks "never run" em sync PRs, o que não bate. Documentar: re-run o `PR checks` do sync PR, ou usar `RELEASE_TOKEN`.
+- **Processo órfão do adaptador `command` (aberto desde a Fase 1): fechado, sem mudança.** O `node` falha em 5 s (`the deploy command is still running after 0.08 min`) e o passo termina na hora, sem esperar o órfão. O filho em execução (`sleep 60`) segue vivo no passo seguinte (ppid 1), mas o resto do script não roda (o `bash` dele foi morto: o arquivo que ele gravaria depois do `sleep` nunca apareceu). No fim do job o runner faz "Cleaning up orphan processes". Num job de deploy real o órfão vive no máximo até o fim do job.
+- PR checks do PR #5 contra `main` ficou vermelho (`conventions`); o merge foi pela linha, nada passou por cima de check vermelho.
+
+Limpeza: variáveis `CHECKS_COMMAND`, `TICKET_PATTERN`, `DEPLOY_COMMAND`, `DEPLOY_TEST_APPS`, `DEPLOY_PROD_APPS` apagadas (fica `SPIKE_VAR`); PRs de teste fechados ou mergeados, nenhum aberto; branches de teste apagados (fica o antigo `feat/SBX-1-spike`); workflow `Probe timeout` desativado (o arquivo nunca entrou na `main`). A `main` do sandbox fica com o `deploy.yml` e o `scripts/deploy.sh` de teste; sem as variáveis, o kit só cria tags. Tags novas: `v0.2.2-rc`, `v0.2.3-rc`, `v0.2.3`, `v0.3.0-rc`, `v0.3.1-rc`, `v0.3.1`, `v0.4.0-rc`, `v0.4.0`.
+
+Em aberto (para a Task 3.2 ou depois): as 3 linhas de doc acima (PR do install, `deploy.yml` na branch padrão, sync PR com check vermelho).
