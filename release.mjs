@@ -23,8 +23,10 @@
 //   deploy-check gate a deploy: any release tag for test stages; --prod only for the last rc of an
 //                open line that contains the default branch, or a final (vX.Y.Z, vX.Y.Z-hf) whose code
 //                equals its rc (rollback)
-//   deploy       deploy a release tag to the test or prod apps on Cubeship (passes deploy-check first),
-//                then fail unless each app's container comes up and stays up (see waitForHealthy)
+//   deploy       deploy a release tag to the test or prod targets through the deploy adapter
+//                (adapters/<name>.mjs: command runs the project's DEPLOY_COMMAND, cubeship deploys
+//                and waits until each app stays up), in order, stopping at the first that fails;
+//                passes deploy-check first
 //   status       print the release state of the repo (read-only)
 //   report       after an automatic job (rc, deploy-test, final, cleanup): on a failure open the issue
 //                "Release automation failing: <job> on <line>" (label release-kit) or comment on it
@@ -36,9 +38,12 @@
 // Flags: --dry-run (print, change nothing), --no-fetch, --branch, --sha, --head, --version,
 //        --title, --base, --prod, --stage, --apps, --job, --line, --result, --run-url, --error. Env: DEFAULT_BRANCH, GITHUB_REPOSITORY,
 //        GH_TOKEN/GITHUB_TOKEN, TICKET_PATTERN, PR_TITLE, HEAD_REF, BASE_REF, HEAD_SHA,
-//        CUBESHIP_URL, CUBESHIP_TOKEN, DEPLOY_TEST_APPS, DEPLOY_PROD_APPS,
-//        RELEASE_HEALTH_STABLE_S, RELEASE_HEALTH_WAIT_S, GITHUB_REF_TYPE + GITHUB_REF_NAME (a
-//        deploy with no tag takes the tag or the line the run starts from).
+//        DEPLOY_TEST_APPS, DEPLOY_PROD_APPS, DEPLOY_ADAPTER (command or cubeship; empty: command
+//        when DEPLOY_COMMAND is set, else cubeship), DEPLOY_COMMAND, DEPLOY_URL, DEPLOY_TOKEN
+//        (CUBESHIP_URL and CUBESHIP_TOKEN are still read when those two are empty),
+//        RELEASE_HEALTH_STABLE_S, RELEASE_HEALTH_WAIT_S (cubeship), GITHUB_REF_TYPE +
+//        GITHUB_REF_NAME (a deploy with no tag takes the tag or the line the run starts from).
+//        TICKET_PATTERN=none: feature branches and titles carry no ticket (feat/login, feat: add login).
 
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync } from 'node:fs';

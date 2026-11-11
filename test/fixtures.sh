@@ -7,6 +7,8 @@
 # Each later section starts from its own copy (fresh <name>: <scratch>/<name>/{remote.git,work}).
 # Candidates are vX.Y.Z-rc on a release line and vX.Y.Z-hf-rc on a hotfix line, one patch per rc
 # (v0.2.0-rc, v0.2.1-rc, …, v0.2.3-hf-rc); the final is the last rc without -rc (v0.2.3-hf).
+# Sections 17 to 19 deploy through the adapters (test/cubeship-mock.mjs, test/deploy-command.sh);
+# 20 to 23 read the callers and the docs, and run checks.sh and install.sh in their own folders.
 # Every step asserts its outcome (expect, expect_out, check); any miss makes the script exit 1.
 set -uo pipefail
 
@@ -542,6 +544,9 @@ done
 for name in DEPLOY_ADAPTER DEPLOY_COMMAND DEPLOY_URL DEPLOY_TOKEN CUBESHIP_URL CUBESHIP_TOKEN; do
   check "the kit's workflow sets $name" grep -qE "^  $name: " "$kitrel"
 done
+check "the README gives the one-line install" \
+  grep -qF "raw.githubusercontent.com/Kaina-Ribeiro/release-kit/v1/install.sh" "$kit/README.md"
+check "RELEASING.md sends deploys to Actions → Deploy" not grep -qF 'Actions → Release → `deploy`' "$kit/RELEASING.md"
 
 echo; echo "=== 21. TICKET_PATTERN=none: branches and titles without a ticket"
 cd "$scratch/work" || die "cannot enter $scratch/work"

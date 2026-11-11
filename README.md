@@ -1,12 +1,14 @@
 # release-kit
 
 Release automation for GitHub repositories. You merge pull requests; the kit creates the version
-tags, opens the follow-up PRs, deploys, and tells you when something fails.
+tags, opens the follow-up PRs, and tells you when something fails. Deploys are optional: turn
+them on and the kit deploys through your own script or through Cubeship.
 
 One kit serves every project. Nothing in it is specific to a project.
 
 - [How it works](#how-it-works)
 - [Add it to a project](#add-it-to-a-project)
+- [Versions and trust](#versions-and-trust)
 - [Reference](#reference): files, tag names, guards
 - [Working on the kit](#working-on-the-kit): tests and kit releases
 
@@ -18,8 +20,8 @@ PR → release/v0.2 → tag v0.2.0-rc (test stage) → prod → merge into main 
 
 | You do | The kit does |
 |:--|:--|
-| Merge a PR into `release/v0.2` | Tags the next candidate (`v0.2.0-rc`, `v0.2.1-rc`, …) and deploys it to the test stage |
-| Run `deploy` to prod | Deploys the candidate you tested, and checks that the app stays up |
+| Merge a PR into `release/v0.2` | Tags the next candidate (`v0.2.0-rc`, `v0.2.1-rc`, …) and, with deploys on, deploys it to the test stage |
+| Deploy to prod (Actions → Deploy; only with deploys on) | Deploys the candidate you tested, and checks that it is up |
 | Merge `release/v0.2` into the default branch | Tags the final version (`v0.2.1`), writes the release notes, deletes the branch |
 | Run `cut-release` or `cut-hotfix` | Creates the next `release/vX.Y`, or a `hotfix/vX.Y` from what is in prod |
 | Nothing: a job failed | Opens an issue with the error, and closes it when the job passes again |
@@ -40,40 +42,51 @@ file into each project.
 
 ## Add it to a project
 
-**In short:** run one script, merge the six files it copies, run the commands it prints.
+**In short:** run one command, merge the files it copies, run the commands it prints.
 
 ### Before you start
 
-- A clone of this kit and a clone of the project, side by side.
-- bash (Git Bash on Windows) and Node 18 or newer.
+- A clone of the project.
+- bash (Git Bash on Windows), `curl`, and Node 18 or newer.
 - `gh` logged in as an admin of the project.
 - A public repository or a paid GitHub plan. On a free private repository GitHub refuses
   rulesets (HTTP 403); everything else works.
 
 ### Step 1: copy the files
 
-From the kit's folder:
+From the project's folder:
 
 ```bash
-bash install.sh ../my-project
+curl -fsSL https://raw.githubusercontent.com/Kaina-Ribeiro/release-kit/v1/install.sh | bash -s -- .
 ```
 
-The script copies six files and prints the commands for step 3. It does not commit, push or
-change any setting.
+To let the kit deploy too, add `--deploy` at the end (step 4).
+
+The script downloads six files (seven with `--deploy`) into the project and prints the commands
+for step 3. It does not commit, push or change any setting.
 
 | File copied into the project | What it is |
 |:--|:--|
-| `.github/workflows/release.yml` | Caller: tags, sync PRs, deploys, failure issues |
+| `.github/workflows/release.yml` | Caller: tags, sync PRs, failure issues (and, with deploys on, each rc to the test stage) |
 | `.github/workflows/pr-checks.yml` | Caller: the two checks every PR must pass |
+| `.github/workflows/deploy.yml` | Only with `--deploy`. Caller: Actions → Deploy, a tag to test or prod |
 | `.github/rulesets/` (3 files) | The rulesets that step 3 sends to GitHub |
 | `RELEASING.md` | The rules and procedures for the team |
 
 If one of these files already exists with other content, the script stops. Add `--force` to
 overwrite.
 
+Other options:
+
+- `--kit-ref <ref>`: the kit version the callers run (default `v1`). See
+  [Versions and trust](#versions-and-trust).
+- With a clone of this kit next to the project, the same script copies from that clone instead
+  of downloading: `bash ../release-kit/install.sh .` (or `bash install.sh ../my-project` from the
+  kit's folder).
+
 ### Step 2: merge the files into the default branch
 
-Commit the six files and get them into the default branch, by PR or by a direct push on a new
+Commit the files and get them into the default branch, by PR or by a direct push on a new
 repository.
 
 Do this **before** step 3. After step 3, only version lines can merge into the default branch.
@@ -92,7 +105,7 @@ the project's `owner/repo` filled in.
 | 2 | GitHub Actions may open pull requests | The kit opens the sync PRs |
 | 3 | Secret `RELEASE_TOKEN` | Without it, the PRs and tags the kit creates start no workflow, so sync PRs never get their checks |
 | 4 | The three rulesets | Protect the default branch, the version lines and the `v*` tags |
-| 5 | Optional variables | `TICKET_PATTERN`: the ticket id format. `CHECKS_DIRS`, `CHECKS_SCRIPTS`: what the `checks` job runs |
+| 5 | Optional variables | `TICKET_PATTERN`: the ticket id format, or `none` for branches and titles without a ticket (`feat/login`, `feat: add login`). `CHECKS_COMMAND`: your own PR check (e.g. `make lint`), run instead of the Node steps. `CHECKS_DIRS`, `CHECKS_SCRIPTS`: what the Node steps of the `checks` job run |
 
 About `RELEASE_TOKEN`: use a fine-grained personal access token of an admin, with write access
 to contents and pull requests (or a GitHub App token).
@@ -113,19 +126,47 @@ More detail on each setting: `RELEASING.md`, "Setup".
 
 Skip this step and the kit only creates tags; deploy them with your own tool.
 
-To let the kit deploy through Cubeship, set these in the project:
+To let the kit deploy, install with `--deploy` (it copies `.github/workflows/deploy.yml` and
+prints item 6), then set the targets and one adapter in the project:
 
 | Name | Kind | Value |
 |:--|:--|:--|
-| `CUBESHIP_URL` | variable | The Cubeship API, e.g. `https://cubeship.example.com/api` |
-| `DEPLOY_TEST_APPS` | variable | The test apps, as `project/environment/app`, separated by spaces, in deploy order |
-| `DEPLOY_PROD_APPS` | variable | The prod apps, same format |
-| `CUBESHIP_TOKEN` | secret | A Cubeship API key with the Deploy role |
+| `DEPLOY_TEST_APPS` | variable | The test targets, separated by spaces, in deploy order. Empty = test deploys nothing |
+| `DEPLOY_PROD_APPS` | variable | The prod targets, same format. Empty = prod deploys nothing |
+
+| Adapter | Set | A target is |
+|:--|:--|:--|
+| `command`: your own script, any language | variable `DEPLOY_COMMAND`, e.g. `./scripts/deploy.sh` | Whatever your script understands, e.g. `web` |
+| `cubeship` | variable `DEPLOY_URL` (the Cubeship API, e.g. `https://cubeship.example.com/api`), secret `DEPLOY_TOKEN` (an API key with the Deploy role) | `project/environment/app`; the app must build from Git |
+
+The kit picks `command` when `DEPLOY_COMMAND` is set, else `cubeship`. `DEPLOY_ADAPTER`
+(`command` or `cubeship`) forces one. The older names `CUBESHIP_URL` and `CUBESHIP_TOKEN` are
+still read by the `cubeship` adapter.
 
 - Test: each new rc is deployed by itself.
-- Prod: only when you run Actions → Release → `deploy`, stage `prod`.
-- The apps must build from Git. The kit points each app at the tag.
-- An empty list turns that stage off.
+- Prod: only when you run Actions → Deploy, stage `prod`.
+- On release day, `final` tags only if prod runs the last rc.
+
+The `command` adapter runs your script from the project's root, twice per target at most:
+
+```
+<DEPLOY_COMMAND> deploy  <stage> <target> <tag>   # exit 0 = the target runs the tag and is up
+<DEPLOY_COMMAND> current <stage> <target>         # print the tag or the commit the target runs
+```
+
+- Example: `DEPLOY_COMMAND=./scripts/deploy.sh`, `DEPLOY_PROD_APPS=web`. A prod deploy runs
+  `./scripts/deploy.sh deploy prod web v0.2.1-rc`.
+- The environment also has `RELEASE_TAG`, `RELEASE_SHA` (the tag's commit), `RELEASE_STAGE`,
+  `RELEASE_TARGET`, `DEPLOY_URL` and `DEPLOY_TOKEN`.
+- `deploy`: any exit other than 0 fails the job, and the next target is not deployed. Limit: 45
+  minutes per target.
+- `current`: the first line printed is compared with the rc's name and its commit (full SHA or a
+  prefix of 7+ characters). The same: `final` tags. Different: `final` refuses. Exit other than
+  0: `final` fails. **Nothing printed** (exit 0) means "I don't know": `final` warns in the log
+  and the job summary, and tags anyway.
+- `DEPLOY_COMMAND` is one script, not a chain: the kit appends the arguments, so in
+  `./a.sh && ./b.sh` only `./b.sh` would get them. Put the steps inside the script.
+- In a dry run, `deploy` only prints `would run: …`; `current` runs (it only reads).
 
 ### Step 5: the first release
 
@@ -153,10 +194,23 @@ and what is in prod.
 | Situation | What to do |
 |:--|:--|
 | The kit got a new `v1.x` version | Nothing. The callers follow `@v1`, so the project gets it on its next run |
-| You want the newest `RELEASING.md` | `bash install.sh ../my-project --force`, then commit the file |
+| You want the newest `RELEASING.md` | Run the step 1 command again with `--force`, then commit the file |
+| You want deploys now | Run the step 1 command again with `--deploy`, then follow step 4 |
 | The kit got a `v2` (a breaking change) | Each project moves to it with a PR |
-| The project still has `.github/scripts/release.mjs` (old install) | `bash install.sh ../my-project --force`. It prints how to remove that script and rename the required checks |
-| You want to try a kit change before releasing it | `bash install.sh ../sandbox --force --kit-ref <branch>` points the callers at that branch |
+| The project's Release workflow still has `deploy` in its menu (install before `v1.2.0`) | Run the step 1 command again with `--force`. It keeps deploys on, adds Actions → Deploy, and prints how to copy `CUBESHIP_URL`/`CUBESHIP_TOKEN` to `DEPLOY_URL`/`DEPLOY_TOKEN` |
+| The project still has `.github/scripts/release.mjs` (old install) | Run the step 1 command again with `--force`. It prints how to remove that script and rename the required checks |
+| You want to try a kit change before releasing it | Add `--force --kit-ref <branch>` (in the URL too: `…/release-kit/<branch>/install.sh`) on a sandbox project |
+
+## Versions and trust
+
+The callers run the kit at `@v1`. Each new `v1.x` of the kit then runs in your repository, with
+your tokens (`RELEASE_TOKEN`, `DEPLOY_TOKEN`), on the next run, without a PR on your side.
+
+If you would rather review each kit change first, pin an exact version and move it by hand:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kaina-Ribeiro/release-kit/v1.2.0/install.sh | bash -s -- . --kit-ref v1.2.0
+```
 
 ## Reference
 
@@ -165,26 +219,31 @@ and what is in prod.
 | File | Goes into the project? | What it does |
 |:--|:--|:--|
 | `release.mjs` | No. The kit's workflows run it | All the logic. Commands: `rc`, `final`, `sync`, `cleanup`, `cut-release`, `cut-hotfix`, `deploy`, `deploy-check`, `conventions`, `report`, `status`. With `--dry-run` a command only prints what it would do |
+| `adapters/` | No. `release.mjs` loads one when it deploys or checks prod | The deploy adapters: `command.mjs` (the project's script), `cubeship.mjs` |
+| `checks.sh` | No. The `checks` job runs it | `CHECKS_COMMAND`, or the Node install, lint and typecheck |
 | `.github/workflows/release.yml`, `pr-checks.yml` | No. Reusable workflows (`on: workflow_call`) | The jobs. Each one checks out the project and this kit at `job.workflow_sha` |
 | `workflows/release.yml` | Yes, as `.github/workflows/release.yml` | Caller of the kit's `release.yml@v1`. Passes the project's variables and secrets |
+| `workflows/deploy.yml` | Only with deploys on, as `.github/workflows/deploy.yml` | Caller of the kit's `release.yml@v1` with `command: deploy` (Actions → Deploy) |
 | `workflows/pr-checks.yml` | Yes, as `.github/workflows/pr-checks.yml` | Caller of the kit's `pr-checks.yml@v1` |
 | `rulesets/*.json` | Yes, as `.github/rulesets/` | Default branch, version lines and `v*` tags |
 | `RELEASING.md` | Yes | The rules, for the people working on the project |
-| `install.sh` | No | Copies the files above and prints the settings commands |
+| `install.sh` | No | Copies (or downloads) the files above and prints the settings commands |
+| `LICENSE` | No | MIT |
 
 When each job of the release workflow runs:
 
 | Event | Jobs |
 |:--|:--|
-| Push to a version line | `rc` (tag + sync PR), then a deploy to the test stage. A commit that already has a tag (e.g. a fresh cut) gets no rc |
+| Push to a version line | `rc` (tag + sync PR), then a deploy to the test stage (when `DEPLOY_TEST_APPS` is set). A commit that already has a tag (e.g. a fresh cut) gets no rc |
 | PR merged into a version line | `cleanup`: deletes the feature branch |
 | PR merged into the default branch | `final`: the final tag, plus a sync PR from the default branch into the next open release |
-| Run workflow (manual) | `cut-release`, `cut-hotfix` or `deploy` |
+| Actions → Release (manual) | `cut-release` or `cut-hotfix` |
+| Actions → Deploy (manual, only with deploys on) | `deploy`: a tag to the test or prod targets |
 | An automatic job fails | `report`: one issue per job and line, closed by that job's next success |
 
 The two PR checks:
 
-- `pr-checks / checks`: install, lint, typecheck.
+- `pr-checks / checks`: `CHECKS_COMMAND`, or install, lint, typecheck.
 - `pr-checks / conventions`: branch name, PR title, target branch.
 
 ### Tag names
@@ -210,7 +269,8 @@ What the kit refuses, or does by itself, besides tagging. Details in `RELEASING.
 |:--|:--|
 | `deploy` with the tag empty | Takes the last rc of the line the run starts from, or the tag it starts from. From the default branch it takes the only open line, and refuses when more than one is open (e.g. a hotfix and a release) |
 | `deploy` to prod | Takes an rc only if it contains the default branch, so a hotfix already in prod is never lost. Merge the sync PR first |
-| A deploy "succeeded" but the app died | Fails, unless each app's container stays up |
+| A deploy "succeeded" but the app died | Fails, unless the adapter sees each target up (your script's exit code; on Cubeship, the container stays up) |
+| `final` while prod runs something else | Refuses until prod runs the last rc. A `command` script that prints nothing for `current` skips this check, with a warning |
 | `cut-release` from an open release | Refuses while that release's head has no rc yet |
 | A commit that already carries a final, or an older line's rc | Gets no rc |
 | A PR from a version line | Accepted only into the default branch or a newer line |
@@ -232,8 +292,9 @@ What it does:
 
 - Builds a throwaway repository with fixture tags and runs the whole release cycle in
   `--dry-run`.
-- `test/cubeship-mock.mjs` stands in for Cubeship and `test/github-mock.mjs` for the GitHub API
-  (section 14b: a real `final` opens the sync PR and comments).
+- `test/cubeship-mock.mjs` stands in for Cubeship, `test/deploy-command.sh` for a project's
+  deploy script, and `test/github-mock.mjs` for the GitHub API (section 14b: a real `final`
+  opens the sync PR and comments).
 - Every step asserts its outcome. `expect ok|fail` checks the exit code. `expect_out ok|fail
   "<text>"` also requires the text in the output. `check` asserts a file or a git state.
 
@@ -257,6 +318,9 @@ What it covers, among others:
 - Legacy `-rc.N` tags, and hotfix `-hf-rc` → `-hf` tags (section 5).
 - Sections 11 and up each start from their own copy of the source and reproduce one bug.
 - Section 15 mixes legacy and manual tags with a hotfix that switches to `-hf` mid-way.
+- Sections 17 to 23, the generic kit: tags only (17), adapter choice and the Cubeship adapter
+  under the new names (18), the `command` adapter (19), the callers (20), `TICKET_PATTERN=none`
+  (21), `checks.sh` (22), and `install.sh` in local and download mode (23).
 
 It never pushes outside its scratch copy:
 
