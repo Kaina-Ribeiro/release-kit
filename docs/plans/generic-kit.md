@@ -45,7 +45,7 @@
 
 ### Task 1.1: a costura do adaptador + Cubeship movido
 
-**Status:** ⏳ pending
+**Status:** ✅ done (a6dcf10)
 
 **Files:**
 - Create: `adapters/cubeship.mjs`
@@ -124,7 +124,7 @@ unset DEPLOY_TEST_APPS   # e mate o mock
 
 ### Task 1.2: adaptador `command`
 
-**Status:** ⏳ pending
+**Status:** ✅ done (f8f4451)
 
 **Files:**
 - Create: `adapters/command.mjs`, `test/deploy-command.sh`
@@ -186,7 +186,7 @@ unset DEPLOY_COMMAND DEPLOY_STATE
 
 ### Task 1.3: workflows e chamadores
 
-**Status:** ⏳ pending
+**Status:** ✅ done (bf19fc0)
 
 **Files:**
 - Modify: `.github/workflows/release.yml`, `workflows/release.yml`
@@ -391,4 +391,36 @@ Sandbox: `Kaina-Ribeiro/release-kit-sandbox` (privado, usado no hardening).
 
 ## Notas
 
-(vazio; cada fase registra aqui os commits, os desvios do plano e o que ficou em aberto)
+(cada fase registra aqui os commits, os desvios do plano e o que ficou em aberto)
+
+### Fase 1 (2026-11-11) ✅
+
+Branch `feat/generic-kit` (local, sem push), a partir da `master` em `377cb4a`:
+
+| Commit | O quê |
+|:--|:--|
+| `d681615` | `docs: plan a generic kit with optional deploys through adapters` (spec + este plano; a mensagem não estava fixada no plano) |
+| `a6dcf10` | Task 1.1: `adapters/cubeship.mjs`, a costura em `release.mjs`, seções 17 e 18 |
+| `f8f4451` | Task 1.2: `adapters/command.mjs`, `test/deploy-command.sh`, seção 19 |
+| `bf19fc0` | Task 1.3: inputs novos no workflow do kit, `workflows/release.yml` sem deploy, `workflows/deploy.yml`, seção 20 |
+
+Teste: `bash test/fixtures.sh "" "$(mktemp -d)"` (Git Bash, Windows) → exit 0, `✓ all expectations met`, seções 0 a 16 sem edição (só o `trap` ganhou `$cubemock`).
+
+Desvios e decisões:
+- **`--dry-run` sem credenciais e sem a pasta `adapters/`:** o adaptador é carregado antes de saber se há credenciais, então um `deploy --dry-run` a partir do `release.mjs` sozinho falha com `is not beside release.mjs`, em vez de só imprimir. Os comandos que não deployam funcionam sozinhos, como pedido.
+- **Fora de `--dry-run`, sem credenciais, no `final`:** a mensagem antiga (`DEPLOY_PROD_APPS is set but CUBESHIP_URL or CUBESHIP_TOKEN is missing …`) foi trocada pelas mensagens fixas do plano (`no deploy adapter is configured: …` / `the <name> deploy adapter needs …`). Nenhum teste dependia da antiga.
+- **Adaptador `command`, `current`:** recebe o mesmo ambiente do `deploy` (`RELEASE_TAG`/`RELEASE_SHA` = o rc que o `final` confere) e o mesmo limite de 45 min; o spec não separava os dois verbos.
+- **Tempo esgotado no `command`:** a mensagem diz `after <N> min` com até 2 casas (`0.01 min` no teste de 300 ms).
+- `workflows/deploy.yml`: a descrição do `tag` perdeu o prefixo `deploy only:` (o arquivo só faz deploy).
+
+Em aberto:
+- ⚠️ **Processo órfão no tempo esgotado:** o `execFileSync` mata só o `bash` de fora; o script do projeto (e o que ele chamou) continua rodando depois que o kit falha. No teste o `slow` termina e grava o estado ~5 s depois. O job falha no tempo certo; conferir na Fase 3 (Task 3.1, passo 5) se o runner do GitHub encerra o órfão ou espera por ele. Se esperar, trocar por `spawn` com grupo de processos.
+- Até a Task 2.3, o `install.sh` instala o `release.yml` novo (sem botão de deploy) e ainda não copia o `deploy.yml`. Nada sai antes da Fase 3.
+- O cabeçalho do `release.mjs` ainda cita o Cubeship e os nomes antigos: fica para a Task 2.4, como o plano diz.
+
+Revisão independente do branch (um revisor, só leitura), achados e decisões:
+- ⚠️ **Para a Task 2.3 (importante):** quem reinstalar por cima de um `release.yml` antigo recebe o chamador novo, que passa só `DEPLOY_URL`/`DEPLOY_TOKEN`. Se o repo ainda tem só `vars.CUBESHIP_URL`/`secrets.CUBESHIP_TOKEN`, o próximo `deploy-test` falha com `no deploy adapter is configured`. Não corrigido no chamador: o spec (seção 2) e a seção 20 exigem que os chamadores não citem o Cubeship. A Task 2.3 deve, ao detectar o formato antigo, imprimir a troca (`CUBESHIP_URL` → `DEPLOY_URL`, secret `CUBESHIP_TOKEN` → `DEPLOY_TOKEN`). Os 3 repos de produção não são afetados enquanto não reinstalarem.
+- Menor, adiado (Task 2.4 pode documentar): um `DEPLOY_COMMAND` encadeado (`./a.sh && ./b.sh`) recebe os argumentos só no último comando, e o encadeamento inteiro roda também no `current`. Documentar "um script só".
+- Menor, adiado: `deploy --dry-run` com o `release.mjs` sozinho falha (ver "Desvios" acima); na `master` ele imprimia o plano.
+- Menor, adiado: as mensagens citam só `DEPLOY_URL`/`DEPLOY_TOKEN` e não dizem que `CUBESHIP_URL`/`CUBESHIP_TOKEN` continuam aceitos.
+- Conferido sem problema: o `cubeship.mjs` é igual às linhas 392–572 da `master`, salvo os nomes de variáveis; o chamador antigo continua válido contra o workflow novo; o `deploy.yml` com `contents: read` basta (o job só faz `git fetch`/`ls-remote`).
