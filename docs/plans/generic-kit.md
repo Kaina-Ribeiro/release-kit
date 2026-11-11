@@ -233,7 +233,7 @@ done
 
 ### Task 2.1: ticket opcional
 
-**Status:** ⏳ pending
+**Status:** ✅ done (424c781)
 
 **Files:** Modify `release.mjs` (`cmdConventions` ~750), `test/fixtures.sh` (seção 21)
 
@@ -260,7 +260,7 @@ expect_out fail 'must be <type>/<TICKET>-short-name' conventions --head feat/log
 
 ### Task 2.2: `checks.sh` e `CHECKS_COMMAND`
 
-**Status:** ⏳ pending
+**Status:** ✅ done (dc86929)
 
 **Files:**
 - Create: `checks.sh`
@@ -304,7 +304,7 @@ check "the caller passes CHECKS_COMMAND" grep -qF 'checks_command: ${{ vars.CHEC
 
 ### Task 2.3: `install.sh` com um comando
 
-**Status:** ⏳ pending
+**Status:** ✅ done (abd1759)
 
 **Files:** Modify `install.sh`, `test/fixtures.sh` (seção 23)
 
@@ -338,7 +338,7 @@ Decisões:
 
 ### Task 2.4: docs e licença
 
-**Status:** ⏳ pending
+**Status:** ✅ done (191f63b)
 
 **Files:** Modify `README.md`, `RELEASING.md`, `release.mjs` (só o cabeçalho ~1–41), `test/fixtures.sh` (comentário do topo e 2 `check`); Create `LICENSE`.
 
@@ -424,3 +424,31 @@ Revisão independente do branch (um revisor, só leitura), achados e decisões:
 - Menor, adiado: `deploy --dry-run` com o `release.mjs` sozinho falha (ver "Desvios" acima); na `master` ele imprimia o plano.
 - Menor, adiado: as mensagens citam só `DEPLOY_URL`/`DEPLOY_TOKEN` e não dizem que `CUBESHIP_URL`/`CUBESHIP_TOKEN` continuam aceitos.
 - Conferido sem problema: o `cubeship.mjs` é igual às linhas 392–572 da `master`, salvo os nomes de variáveis; o chamador antigo continua válido contra o workflow novo; o `deploy.yml` com `contents: read` basta (o job só faz `git fetch`/`ls-remote`).
+
+### Fase 2 (2026-11-11) ✅
+
+Mesmo branch `feat/generic-kit` (local, sem push), sobre `dea7068`:
+
+| Commit | O quê |
+|:--|:--|
+| `424c781` | Task 2.1: `TICKET_PATTERN=none` em `cmdConventions`, seção 21 |
+| `dc86929` | Task 2.2: `checks.sh`, job `checks` com o kit fora do workspace, `checks_command`/`CHECKS_COMMAND`, seção 22 |
+| `abd1759` | Task 2.3: `install.sh` com destino padrão, modo download, `--deploy`, detecção do formato antigo, texto novo, seção 23 |
+| `191f63b` | Task 2.4: `README.md`, `RELEASING.md`, cabeçalho do `release.mjs`, `LICENSE`, comentário do topo dos fixtures e 2 `check` no fim da seção 20 |
+
+Teste: `bash test/fixtures.sh "" "$(mktemp -d)"` (Git Bash, Windows) → exit 0, `✓ all expectations met`, seções 0 a 23. `bash -n install.sh` e `bash -n checks.sh` → 0. Cada seção nova deu `✗ MISS` antes do código (21: 7, 22: 8, 23: 16). As seções 0 a 20 não foram editadas, salvo os 2 `check` previstos na seção 20.
+
+Desvios e decisões:
+- **`checks.sh`, `CHECKS_SCRIPTS` vazio:** ganhou o padrão `lint typecheck type-check` dentro do script (com `set -u`, rodar o script sem a variável quebrava). No workflow nada muda: ele já passava esse padrão.
+- **`--kit-ref` e os comentários:** a troca de `@v1` vale para toda ocorrência nos `workflows/*` (a linha `uses:` e os comentários "pinned at @v1"), porque o teste do `inst-g` exige nenhum `@v1`. `@v1.2.0` e parecidos ficam intactos.
+- **Troca de nomes (acréscimo da revisão da Fase 1):** com o formato antigo detectado, o `install.sh` imprime `gh variable set DEPLOY_URL … "$(gh variable get CUBESHIP_URL …)"` e `gh secret set DEPLOY_TOKEN` (secret não pode ser lido de volta: o dono cola o valor), dizendo que sem isso o próximo deploy falha com `no deploy adapter is configured`. Sai também no caminho de upgrade da instalação antiga (`.github/scripts/release.mjs`), só quando esse formato é detectado. `check` novo no `inst-c`.
+- **Item 6 do texto impresso:** as linhas `gh` de deploy saem comentadas (escolher um adaptador), como as opcionais do item 5. A linha ativa de `TICKET_PATTERN` com o padrão de hoje continua; `none` e `CHECKS_COMMAND` vêm comentados abaixo dela.
+- **`RELEASING.md`:** o aviso "Automatically delete head branches" saiu do item 6 (deploys) para o item 1 (vale para todo projeto). As subseções "Command adapter" e "Cubeship adapter" ficam dentro de "Deploys".
+- **Docs, acréscimos da revisão da Fase 1:** `DEPLOY_COMMAND` é "um script só" (README passo 4 e RELEASING "Command adapter"); `CUBESHIP_URL`/`CUBESHIP_TOKEN` continuam aceitos pelo `cubeship` (README, RELEASING item 6, cabeçalho do `release.mjs`).
+- Conferido à mão, fora dos testes: `cat install.sh | bash -s -- --deploy` (o caminho do `curl | bash`) instala os 7 arquivos; `--kit-ref` inexistente contra o GitHub real dá 404, `error: cannot download …; nothing was installed` e nada copiado.
+- Revisão: só a minha (sem revisor independente nesta fase); a Fase 3 no sandbox é a conferência real.
+
+Em aberto (para a Fase 3):
+- ⚠️ **Job `checks` no GitHub:** o kit é movido com `mv` depois do `actions/checkout` com `path: .release-kit`. Conferir no sandbox (Task 3.1, passo 4) que o passo de limpeza do checkout não reclama da pasta ausente (com `persist-credentials: false` não deve haver o que limpar).
+- Menor: o `curl | bash` executa o script à medida que chega; um download cortado no meio rodaria só o começo. O pior caso é texto impresso pela metade: o laço que copia é um comando composto (lido inteiro antes de rodar) e só roda depois de todos os arquivos baixados. Se quiser blindar, envolver o corpo em `{ … }`.
+- O processo órfão no tempo esgotado do adaptador `command` (Notas da Fase 1) continua em aberto.
