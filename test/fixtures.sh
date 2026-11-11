@@ -466,6 +466,40 @@ GH_TOKEN=test-token GITHUB_API_URL=http://127.0.0.1:9 expect_out ok "warning: co
 expect_out fail "--job must be rc, deploy-test, final or cleanup" \
   report --job deploy --line release/v0.3 --result failure --run-url u
 
+echo; echo "=== 17. tags only: no deploy variable, nothing deploys, final does not look at prod"
+fresh tagsonly
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): first"; tag v0.1.0-rc origin/release/v0.1
+expect_out ok "no test apps (DEPLOY_TEST_APPS is empty); nothing to deploy" deploy --stage test --branch release/v0.1
+expect_out ok "no prod apps (DEPLOY_PROD_APPS is empty); nothing to deploy" deploy --stage prod --branch release/v0.1
+merge_into_default release/v0.1
+out=$(node "$kit/release.mjs" final --head release/v0.1 --dry-run 2>&1); printf '%s\n' "$out"
+check "final tags the rc" grep -qF "→ v0.1.0 (same code as v0.1.0-rc)" <<<"$out"
+check "final does not look at prod" not grep -qE "prod runs|prod does not run|deploy credentials" <<<"$out"
+
+echo; echo "=== 18. the cubeship adapter reads DEPLOY_URL and DEPLOY_TOKEN; adapter selection"
+fresh cubenames
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): first"; tag v0.1.0-rc origin/release/v0.1
+node "$kit/test/cubeship-mock.mjs" 47128 "$scratch/cubenames/work" &
+cubemock=$!
+trap 'kill $mock $ghmock $cubemock 2>/dev/null' EXIT
+sleep 1
+export RELEASE_DEPLOY_POLL_MS=50 RELEASE_HEALTH_POLL_MS=50 RELEASE_HEALTH_STABLE_S=1 RELEASE_HEALTH_WAIT_S=2
+export DEPLOY_TEST_APPS=demo/test/api
+DEPLOY_URL=http://127.0.0.1:47128 DEPLOY_TOKEN=test-key expect_out ok "✓ demo/test/api runs v0.1.0-rc" deploy --stage test --branch release/v0.1
+DEPLOY_ADAPTER=cubeship DEPLOY_URL=http://127.0.0.1:47128 DEPLOY_TOKEN=test-key expect ok deploy --stage test --branch release/v0.1
+DEPLOY_ADAPTER=foo expect_out fail 'DEPLOY_ADAPTER must be one of: cubeship' deploy --stage test --branch release/v0.1
+expect_out fail "no deploy adapter is configured: set DEPLOY_COMMAND" deploy --stage test --branch release/v0.1
+DEPLOY_ADAPTER=cubeship expect_out fail "the cubeship deploy adapter needs DEPLOY_URL and DEPLOY_TOKEN" deploy --stage test --branch release/v0.1
+expect_out ok "would deploy v0.1.0-rc to demo/test/api" deploy --stage test --branch release/v0.1 --dry-run
+# release.mjs alone (no adapters/): the commands that do not deploy work, a deploy says what is missing
+cp "$kit/release.mjs" "$scratch/alone.mjs"
+check "status works from release.mjs alone" node "$scratch/alone.mjs" status
+check "deploy-check works from release.mjs alone" node "$scratch/alone.mjs" deploy-check v0.1.0-rc
+out=$(DEPLOY_URL=http://127.0.0.1:47128 DEPLOY_TOKEN=test-key node "$scratch/alone.mjs" deploy --stage test --branch release/v0.1 2>&1)
+check "a deploy from release.mjs alone says the adapter is missing" grep -qF "is not beside release.mjs" <<<"$out"
+kill $cubemock 2>/dev/null
+unset DEPLOY_TEST_APPS RELEASE_DEPLOY_POLL_MS RELEASE_HEALTH_POLL_MS RELEASE_HEALTH_STABLE_S RELEASE_HEALTH_WAIT_S
+
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
 echo "✓ all expectations met"
