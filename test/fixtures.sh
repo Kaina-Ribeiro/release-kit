@@ -543,6 +543,17 @@ for name in DEPLOY_ADAPTER DEPLOY_COMMAND DEPLOY_URL DEPLOY_TOKEN CUBESHIP_URL C
   check "the kit's workflow sets $name" grep -qE "^  $name: " "$kitrel"
 done
 
+echo; echo "=== 21. TICKET_PATTERN=none: branches and titles without a ticket"
+cd "$scratch/work" || die "cannot enter $scratch/work"
+TICKET_PATTERN=none expect ok conventions --head feat/login --base release/v0.4 --title "feat: add login" --no-fetch
+TICKET_PATTERN=none expect ok conventions --head feat/login --base release/v0.4 --title "feat(auth): add login" --no-fetch
+TICKET_PATTERN=NONE expect ok conventions --head fix/two-words --base release/v0.4 --title "fix!: drop it" --no-fetch
+TICKET_PATTERN=none expect ok conventions --head feat/ABC-12-login --base release/v0.4 --title "feat(ABC-12): add login" --no-fetch
+TICKET_PATTERN=none expect_out fail 'must start lowercase' conventions --head feat/login --base release/v0.4 --title "feat: Add login" --no-fetch
+TICKET_PATTERN=none expect_out fail 'must be <type>/short-name, e.g. feat/login' conventions --head login --base release/v0.4 --title "feat: add login" --no-fetch
+TICKET_PATTERN=none expect_out fail 'must be type: summary, e.g. feat: add login' conventions --head feat/login --base release/v0.4 --title "add login" --no-fetch
+expect_out fail 'must be <type>/<TICKET>-short-name' conventions --head feat/login --base release/v0.4 --title "feat: add login" --no-fetch
+
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
 echo "✓ all expectations met"

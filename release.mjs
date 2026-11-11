@@ -644,6 +644,7 @@ function cmdConventions() {
   const base = opts.base ?? process.env.BASE_REF ?? '';
   const def = defaultBranch();
   const ticket = process.env.TICKET_PATTERN || '[A-Z][A-Z0-9]+-\\d+';
+  const noTicket = ticket.trim().toLowerCase() === 'none';
   const types = TYPES.join('|');
   const errors = [];
 
@@ -674,7 +675,15 @@ function cmdConventions() {
     }
   } else {
     if (base === def) errors.push(`only release/vX.Y or hotfix/vX.Y can merge into ${def}; target a release line`);
-    if (!githubRevert) {
+    if (!githubRevert && noTicket) {
+      // TICKET_PATTERN=none: plain short names and titles; a ticket in them is just text.
+      if (!new RegExp(`^(${types})/[A-Za-z0-9]+(-[A-Za-z0-9]+)*$`).test(head)) {
+        errors.push(`branch "${head}" must be <type>/short-name, e.g. feat/login (types: ${types})`);
+      }
+      const titleM = new RegExp(`^(${types})(\\([^)]+\\))?!?: (.+)$`).exec(title);
+      if (!titleM) errors.push(`title "${title}" must be type: summary, e.g. feat: add login`);
+      else if (/^[A-Z]/.test(titleM[3])) errors.push(`summary "${titleM[3]}" must start lowercase (imperative)`);
+    } else if (!githubRevert) {
       const branchM = new RegExp(`^(${types})/(${ticket})-[a-z0-9]+(-[a-z0-9]+)*$`).exec(head);
       if (!branchM) errors.push(`branch "${head}" must be <type>/<TICKET>-short-name, e.g. feat/ABC-12-login (types: ${types})`);
       const titleM = new RegExp(`^(${types})\\((${ticket})\\)!?: (.+)$`).exec(title);
