@@ -1,14 +1,16 @@
-# Release automation: rc tags and sync PRs on version lines, a test-stage deploy of each rc,
-# final tags on release day, manual cuts and deploys. The jobs and the logic live in the release
-# kit (Kaina-Ribeiro/release-kit), pinned at @v1: a kit fix reaches this repository without a PR.
-# Rules in RELEASING.md. Keep the triggers and inputs; edit only what is passed below.
+# Release automation: rc tags and sync PRs on version lines, final tags on release day, manual
+# cuts (and, when deploys are on, a test-stage deploy of each rc). The jobs and the logic live in
+# the release kit (Kaina-Ribeiro/release-kit), pinned at @v1: a kit fix reaches this repository
+# without a PR. Rules in RELEASING.md. Keep the triggers and inputs; edit only what is passed below.
 #
 # Token: secrets.RELEASE_TOKEN if set (a GitHub App token or an admin's fine-grained PAT), else
 # GITHUB_TOKEN. With GITHUB_TOKEN, sync PRs, tags and branches it creates do not trigger other
-# workflows, so required checks never run on sync PRs. See RELEASING.md, "Setup".
-# Deploys (optional): vars.CUBESHIP_URL, vars.DEPLOY_TEST_APPS, vars.DEPLOY_PROD_APPS and
-# secrets.CUBESHIP_TOKEN. Without DEPLOY_*_APPS nothing is deployed. A deploy fails unless each app's
-# container stays up afterwards; vars.RELEASE_HEALTH_STABLE_S / RELEASE_HEALTH_WAIT_S tune that.
+# workflows, so required checks do not pass on sync PRs. See RELEASING.md, "Setup".
+# Deploys (optional): without vars.DEPLOY_TEST_APPS and vars.DEPLOY_PROD_APPS nothing is deployed
+# and the kit only tags. With them, each rc deploys to the test targets from here, and manual
+# deploys run from the Deploy workflow (.github/workflows/deploy.yml). The deploy adapter reads
+# vars.DEPLOY_ADAPTER, vars.DEPLOY_COMMAND (your own deploy script), vars.DEPLOY_URL and
+# secrets.DEPLOY_TOKEN; vars.RELEASE_HEALTH_STABLE_S / RELEASE_HEALTH_WAIT_S tune the health check.
 name: Release
 
 on:
@@ -21,20 +23,10 @@ on:
       command:
         description: What to do
         type: choice
-        options: [cut-release, cut-hotfix, deploy]
+        options: [cut-release, cut-hotfix]
         required: true
       version:
         description: 'cut-release only: force X.Y (e.g. 1.0). Empty = next minor.'
-        type: string
-        required: false
-        default: ''
-      stage:
-        description: 'deploy only: where to'
-        type: choice
-        options: [test, prod]
-        default: test
-      tag:
-        description: 'deploy only: the tag. Empty = last rc of the branch you run from (or the tag you run from).'
         type: string
         required: false
         default: ''
@@ -54,14 +46,14 @@ jobs:
     with:
       command: ${{ inputs.command || '' }}
       version: ${{ inputs.version || '' }}
-      stage: ${{ inputs.stage || 'test' }}
-      tag: ${{ inputs.tag || '' }}
       dry_run: ${{ inputs.dry_run == true }}
-      cubeship_url: ${{ vars.CUBESHIP_URL }}
+      deploy_adapter: ${{ vars.DEPLOY_ADAPTER }}
+      deploy_command: ${{ vars.DEPLOY_COMMAND }}
+      deploy_url: ${{ vars.DEPLOY_URL }}
       deploy_test_apps: ${{ vars.DEPLOY_TEST_APPS }}
       deploy_prod_apps: ${{ vars.DEPLOY_PROD_APPS }}
       health_stable_s: ${{ vars.RELEASE_HEALTH_STABLE_S }}
       health_wait_s: ${{ vars.RELEASE_HEALTH_WAIT_S }}
     secrets:
       release_token: ${{ secrets.RELEASE_TOKEN }}
-      cubeship_token: ${{ secrets.CUBESHIP_TOKEN }}
+      deploy_token: ${{ secrets.DEPLOY_TOKEN }}

@@ -7,6 +7,8 @@
 # Each later section starts from its own copy (fresh <name>: <scratch>/<name>/{remote.git,work}).
 # Candidates are vX.Y.Z-rc on a release line and vX.Y.Z-hf-rc on a hotfix line, one patch per rc
 # (v0.2.0-rc, v0.2.1-rc, …, v0.2.3-hf-rc); the final is the last rc without -rc (v0.2.3-hf).
+# Sections 17 to 19 deploy through the adapters (test/cubeship-mock.mjs, test/deploy-command.sh);
+# 20 to 23 read the callers and the docs, and run checks.sh and install.sh in their own folders.
 # Every step asserts its outcome (expect, expect_out, check); any miss makes the script exit 1.
 set -uo pipefail
 
@@ -465,6 +467,173 @@ GH_TOKEN=test-token GITHUB_API_URL=http://127.0.0.1:9 expect_out ok "warning: co
   report --job rc --line hotfix/v0.2 --result failure --run-url u --error "boom"
 expect_out fail "--job must be rc, deploy-test, final or cleanup" \
   report --job deploy --line release/v0.3 --result failure --run-url u
+
+echo; echo "=== 17. tags only: no deploy variable, nothing deploys, final does not look at prod"
+fresh tagsonly
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): first"; tag v0.1.0-rc origin/release/v0.1
+expect_out ok "no test apps (DEPLOY_TEST_APPS is empty); nothing to deploy" deploy --stage test --branch release/v0.1
+expect_out ok "no prod apps (DEPLOY_PROD_APPS is empty); nothing to deploy" deploy --stage prod --branch release/v0.1
+merge_into_default release/v0.1
+out=$(node "$kit/release.mjs" final --head release/v0.1 --dry-run 2>&1); printf '%s\n' "$out"
+check "final tags the rc" grep -qF "→ v0.1.0 (same code as v0.1.0-rc)" <<<"$out"
+check "final does not look at prod" not grep -qE "prod runs|prod does not run|deploy credentials" <<<"$out"
+
+echo; echo "=== 18. the cubeship adapter reads DEPLOY_URL and DEPLOY_TOKEN; adapter selection"
+fresh cubenames
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): first"; tag v0.1.0-rc origin/release/v0.1
+node "$kit/test/cubeship-mock.mjs" 47128 "$scratch/cubenames/work" &
+cubemock=$!
+trap 'kill $mock $ghmock $cubemock 2>/dev/null' EXIT
+sleep 1
+export RELEASE_DEPLOY_POLL_MS=50 RELEASE_HEALTH_POLL_MS=50 RELEASE_HEALTH_STABLE_S=1 RELEASE_HEALTH_WAIT_S=2
+export DEPLOY_TEST_APPS=demo/test/api
+DEPLOY_URL=http://127.0.0.1:47128 DEPLOY_TOKEN=test-key expect_out ok "✓ demo/test/api runs v0.1.0-rc" deploy --stage test --branch release/v0.1
+DEPLOY_ADAPTER=cubeship DEPLOY_URL=http://127.0.0.1:47128 DEPLOY_TOKEN=test-key expect ok deploy --stage test --branch release/v0.1
+DEPLOY_ADAPTER=foo expect_out fail 'DEPLOY_ADAPTER must be one of: cubeship' deploy --stage test --branch release/v0.1
+expect_out fail "no deploy adapter is configured: set DEPLOY_COMMAND" deploy --stage test --branch release/v0.1
+DEPLOY_ADAPTER=cubeship expect_out fail "the cubeship deploy adapter needs DEPLOY_URL and DEPLOY_TOKEN" deploy --stage test --branch release/v0.1
+expect_out ok "would deploy v0.1.0-rc to demo/test/api" deploy --stage test --branch release/v0.1 --dry-run
+# release.mjs alone (no adapters/): the commands that do not deploy work, a deploy says what is missing
+cp "$kit/release.mjs" "$scratch/alone.mjs"
+check "status works from release.mjs alone" node "$scratch/alone.mjs" status
+check "deploy-check works from release.mjs alone" node "$scratch/alone.mjs" deploy-check v0.1.0-rc
+out=$(DEPLOY_URL=http://127.0.0.1:47128 DEPLOY_TOKEN=test-key node "$scratch/alone.mjs" deploy --stage test --branch release/v0.1 2>&1)
+check "a deploy from release.mjs alone says the adapter is missing" grep -qF "is not beside release.mjs" <<<"$out"
+kill $cubemock 2>/dev/null
+unset DEPLOY_TEST_APPS RELEASE_DEPLOY_POLL_MS RELEASE_HEALTH_POLL_MS RELEASE_HEALTH_STABLE_S RELEASE_HEALTH_WAIT_S
+
+echo; echo "=== 19. the command adapter: the project's own script deploys and says what runs"
+fresh cmdadapter
+branch release/v0.1 "origin/$def"; commit_on release/v0.1 "feat(ABC-1): first"; tag v0.1.0-rc origin/release/v0.1
+export DEPLOY_COMMAND="bash $kit/test/deploy-command.sh" DEPLOY_STATE="$scratch/cmd-state"; mkdir "$DEPLOY_STATE"
+rc_sha=$(git rev-parse 'v0.1.0-rc^{commit}')
+DEPLOY_TEST_APPS="web api" expect_out ok "✓ api runs v0.1.0-rc" deploy --stage test --branch release/v0.1
+check "both targets, in order, with tag and commit" \
+  [ "$(tr '\n' ';' < "$DEPLOY_STATE/log")" = "test web v0.1.0-rc $rc_sha;test api v0.1.0-rc $rc_sha;" ]
+DEPLOY_TEST_APPS="bad api2" expect_out fail "bad: the deploy command exited with 1" deploy --stage test v0.1.0-rc
+check "the target after a failure is not deployed" [ ! -e "$DEPLOY_STATE/test-api2" ]
+DEPLOY_TEST_APPS=web2 expect_out ok "would run: bash $kit/test/deploy-command.sh deploy test web2 v0.1.0-rc" deploy --stage test v0.1.0-rc --dry-run
+check "a dry run deploys nothing" [ ! -e "$DEPLOY_STATE/test-web2" ]
+RELEASE_DEPLOY_TIMEOUT_MS=300 DEPLOY_TEST_APPS=slow expect_out fail "slow: the deploy command is still running after" deploy --stage test v0.1.0-rc
+DEPLOY_ADAPTER=cubeship DEPLOY_TEST_APPS=web expect_out fail "the cubeship deploy adapter needs" deploy --stage test v0.1.0-rc
+merge_into_default release/v0.1
+DEPLOY_PROD_APPS=web expect_out fail "prod does not run v0.1.0-rc: web (none)" final --head release/v0.1 --dry-run
+DEPLOY_PROD_APPS="web sha" expect ok deploy --stage prod v0.1.0-rc
+DEPLOY_PROD_APPS="web sha" expect_out ok "✓ prod runs v0.1.0-rc: web, sha" final --head release/v0.1 --dry-run
+out=$(DEPLOY_PROD_APPS=mute node "$kit/release.mjs" final --head release/v0.1 --dry-run 2>&1); printf '%s\n' "$out"
+check "an empty answer warns" grep -qF "mute: the deploy command does not say what it runs" <<<"$out"
+check "and the final still tags" grep -qF "→ v0.1.0 (same code as v0.1.0-rc)" <<<"$out"
+DEPLOY_PROD_APPS=boom expect_out fail "boom: the deploy command exited with 3" final --head release/v0.1 --dry-run
+unset DEPLOY_COMMAND DEPLOY_STATE
+
+echo; echo "=== 20. callers: no deploy button in Release, a Deploy workflow of its own"
+rel="$kit/workflows/release.yml"; dep="$kit/workflows/deploy.yml"; kitrel="$kit/.github/workflows/release.yml"
+check "the release caller offers only the cuts" grep -qF "options: [cut-release, cut-hotfix]" "$rel"
+check "the release caller has no stage or tag input" not grep -qE "inputs\.(stage|tag)" "$rel"
+check "the deploy caller runs the kit's deploy" grep -qE "^      command: deploy$" "$dep"
+check "the deploy caller is a manual workflow only" not grep -qE "^  (push|pull_request):" "$dep"
+check "no caller names Cubeship" not grep -rqi cubeship "$kit/workflows"
+for f in "$rel" "$dep"; do
+  for key in $(sed -n '/^    with:/,/^    secrets:/p' "$f" | grep -oE '^      [a-z_]+' | tr -d ' '); do
+    check "$(basename "$f") passes $key, which the kit declares" grep -qE "^      $key:$" "$kitrel"
+  done
+  for key in $(sed -n '/^    secrets:/,$p' "$f" | grep -oE '^      [a-z_]+' | tr -d ' '); do
+    check "$(basename "$f") passes the secret $key, which the kit declares" grep -qE "^      $key:$" "$kitrel"
+  done
+done
+for name in DEPLOY_ADAPTER DEPLOY_COMMAND DEPLOY_URL DEPLOY_TOKEN CUBESHIP_URL CUBESHIP_TOKEN; do
+  check "the kit's workflow sets $name" grep -qE "^  $name: " "$kitrel"
+done
+check "the README gives the one-line install" \
+  grep -qF "raw.githubusercontent.com/Kaina-Ribeiro/release-kit/v1/install.sh" "$kit/README.md"
+check "RELEASING.md sends deploys to Actions → Deploy" not grep -qF 'Actions → Release → `deploy`' "$kit/RELEASING.md"
+
+echo; echo "=== 21. TICKET_PATTERN=none: branches and titles without a ticket"
+cd "$scratch/work" || die "cannot enter $scratch/work"
+TICKET_PATTERN=none expect ok conventions --head feat/login --base release/v0.4 --title "feat: add login" --no-fetch
+TICKET_PATTERN=none expect ok conventions --head feat/login --base release/v0.4 --title "feat(auth): add login" --no-fetch
+TICKET_PATTERN=NONE expect ok conventions --head fix/two-words --base release/v0.4 --title "fix!: drop it" --no-fetch
+TICKET_PATTERN=none expect ok conventions --head feat/ABC-12-login --base release/v0.4 --title "feat(ABC-12): add login" --no-fetch
+TICKET_PATTERN=none expect_out fail 'must start lowercase' conventions --head feat/login --base release/v0.4 --title "feat: Add login" --no-fetch
+TICKET_PATTERN=none expect_out fail 'must be <type>/short-name, e.g. feat/login' conventions --head login --base release/v0.4 --title "feat: add login" --no-fetch
+TICKET_PATTERN=none expect_out fail 'must be type: summary, e.g. feat: add login' conventions --head feat/login --base release/v0.4 --title "add login" --no-fetch
+expect_out fail 'must be <type>/<TICKET>-short-name' conventions --head feat/login --base release/v0.4 --title "feat: add login" --no-fetch
+
+echo; echo "=== 22. checks.sh: the project's own command, or the Node flow"
+run_checks() { ( cd "$1" && shift && env "$@" bash "$kit/checks.sh" ) 2>&1; }
+mkdir "$scratch/checks-cmd"
+out=$(run_checks "$scratch/checks-cmd" CHECKS_COMMAND='echo ran > marker'); code=$?
+check "CHECKS_COMMAND runs from the project root" [ "$code" -eq 0 -a -e "$scratch/checks-cmd/marker" ]
+out=$(run_checks "$scratch/checks-cmd" CHECKS_COMMAND='false; echo after > marker2'); code=$?
+check "a failing step fails the check and stops it" [ "$code" -ne 0 -a ! -e "$scratch/checks-cmd/marker2" ]
+mkdir "$scratch/checks-node"
+echo '{"scripts":{"lint":"x"}}' > "$scratch/checks-node/package.json"; : > "$scratch/checks-node/package-lock.json"
+out=$(run_checks "$scratch/checks-node" CHECKS_DRY_RUN=1 CHECKS_SCRIPTS="lint typecheck"); code=$?; printf '%s\n' "$out"
+check "the Node flow installs" grep -qxF "+ npm ci" <<<"$out"
+check "the Node flow runs the scripts that exist" grep -qxF "+ npm run lint" <<<"$out"
+check "the Node flow skips the ones that do not" grep -qF 'no "typecheck" script' <<<"$out"
+out=$(run_checks "$scratch/checks-node" CHECKS_DRY_RUN=1 CHECKS_COMMAND='echo mine'); printf '%s\n' "$out"
+check "CHECKS_COMMAND replaces the Node flow" not grep -qF "npm" <<<"$out"
+mkdir "$scratch/checks-none"
+out=$(run_checks "$scratch/checks-none"); code=$?
+check "no package.json, no command: passes with a notice" [ "$code" -eq 0 ]
+check "it says so" grep -qF "No package.json found" <<<"$out"
+check "the workflow moves the kit out of the workspace before the checks" \
+  grep -qF 'mv .release-kit "$RUNNER_TEMP/release-kit"' "$kit/.github/workflows/pr-checks.yml"
+check "the caller passes CHECKS_COMMAND" grep -qF 'checks_command: ${{ vars.CHECKS_COMMAND }}' "$kit/workflows/pr-checks.yml"
+
+echo; echo "=== 23. install.sh: one command, tags only by default, deploys on request or when already on"
+newrepo() { git init --quiet "$scratch/$1" && git -C "$scratch/$1" remote add origin https://github.com/example/proj.git; }
+# The owner type is given, so install.sh never calls gh.
+inst() { RELEASE_KIT_OWNER_TYPE=Organization bash "$kit/install.sh" "$@" 2>&1; }
+kitdir=$(cd "$kit" && { pwd -W 2>/dev/null || pwd; })
+case $kitdir in /*) kiturl="file://$kitdir" ;; *) kiturl="file:///$kitdir" ;; esac
+wf=.github/workflows
+newrepo inst-a
+out=$(inst "$scratch/inst-a"); code=$?; printf '%s\n' "$out"
+check "a plain install succeeds" [ "$code" -eq 0 ]
+for f in $wf/release.yml $wf/pr-checks.yml .github/rulesets/default-branch.json \
+  .github/rulesets/version-lines.json .github/rulesets/version-tags.json RELEASING.md; do
+  check "a plain install copies $f" [ -f "$scratch/inst-a/$f" ]
+done
+check "a plain install has no Deploy workflow" [ ! -e "$scratch/inst-a/$wf/deploy.yml" ]
+check "it says deploys are off" grep -qF "Deploys are off" <<<"$out"
+check "the installed Release has no deploy in its menu" not grep -qF "cut-hotfix, deploy" "$scratch/inst-a/$wf/release.yml"
+newrepo inst-b
+out=$(inst "$scratch/inst-b" --deploy); printf '%s\n' "$out"
+check "--deploy copies the Deploy workflow" [ -f "$scratch/inst-b/$wf/deploy.yml" ]
+check "--deploy prints the deploy command variable" grep -qF DEPLOY_COMMAND <<<"$out"
+check "--deploy prints the prod targets variable" grep -qF DEPLOY_PROD_APPS <<<"$out"
+newrepo inst-c; mkdir -p "$scratch/inst-c/$wf"
+echo "        options: [cut-release, cut-hotfix, deploy]" > "$scratch/inst-c/$wf/release.yml"
+out=$(inst "$scratch/inst-c"); code=$?; printf '%s\n' "$out"
+check "an old Release caller is not overwritten without --force" [ "$code" -eq 1 ]
+check "it says to re-run with --force" grep -qF "re-run with --force" <<<"$out"
+out=$(inst "$scratch/inst-c" --force); printf '%s\n' "$out"
+check "an old Release caller with deploy keeps deploys on" [ -f "$scratch/inst-c/$wf/deploy.yml" ]
+check "the new Release offers only the cuts" grep -qF "options: [cut-release, cut-hotfix]" "$scratch/inst-c/$wf/release.yml"
+check "it prints the move to DEPLOY_URL and DEPLOY_TOKEN" \
+  grep -qE "gh variable set DEPLOY_URL .*CUBESHIP_URL" <<<"$out"
+check "and why: without it the next deploy fails" grep -qF "no deploy adapter is configured" <<<"$out"
+newrepo inst-d
+(cd "$scratch/inst-d" && inst >/dev/null)
+check "no target: installs into the current folder" [ -f "$scratch/inst-d/$wf/release.yml" ]
+newrepo inst-e
+out=$(RELEASE_KIT_RAW_BASE=$kiturl inst "$scratch/inst-e" --deploy); code=$?; printf '%s\n' "$out"
+check "the download mode succeeds" [ "$code" -eq 0 ]
+check "the download mode installs the same callers" diff -r "$scratch/inst-b/.github" "$scratch/inst-e/.github"
+check "the download mode installs the same RELEASING.md" cmp "$scratch/inst-b/RELEASING.md" "$scratch/inst-e/RELEASING.md"
+newrepo inst-f
+out=$(RELEASE_KIT_RAW_BASE=file:///no/such/kit inst "$scratch/inst-f"); code=$?; printf '%s\n' "$out"
+check "a failed download fails the install" [ "$code" -ne 0 ]
+check "and copies nothing" [ ! -e "$scratch/inst-f/.github" -a ! -e "$scratch/inst-f/RELEASING.md" ]
+newrepo inst-g
+inst "$scratch/inst-g" --deploy --kit-ref feat/x >/dev/null
+for f in release deploy pr-checks; do
+  check "--kit-ref pins $f.yml at @feat/x" grep -qF "@feat/x" "$scratch/inst-g/$wf/$f.yml"
+  check "and leaves no @v1 in $f.yml" not grep -qF "@v1" "$scratch/inst-g/$wf/$f.yml"
+done
+check "install.sh parses" bash -n "$kit/install.sh"
 
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi

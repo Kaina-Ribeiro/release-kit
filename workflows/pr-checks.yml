@@ -4,7 +4,9 @@
 # job id `pr-checks`: the rulesets require these exact names. Rules in RELEASING.md.
 #
 # Optional repository variables:
-#   CHECKS_DIRS     space-separated folders with a package.json (default: the root one, else
+#   CHECKS_COMMAND  your own check (e.g. "make lint"), run from the project's root; when set, it
+#                   replaces the Node install/lint/typecheck below
+#   CHECKS_DIRS    space-separated folders with a package.json (default: the root one, else
 #                   every package.json up to two folders deep)
 #   CHECKS_SCRIPTS  package.json scripts to run (default: "lint typecheck type-check"; missing
 #                   ones are skipped)
@@ -26,6 +28,7 @@ jobs:
   pr-checks:
     uses: Kaina-Ribeiro/release-kit/.github/workflows/pr-checks.yml@v1
     with:
+      checks_command: ${{ vars.CHECKS_COMMAND }}
       checks_dirs: ${{ vars.CHECKS_DIRS }}
       checks_scripts: ${{ vars.CHECKS_SCRIPTS }}
       ticket_pattern: ${{ vars.TICKET_PATTERN }}

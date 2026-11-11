@@ -1,0 +1,50 @@
+# Manual deploys: Actions → Deploy deploys a release tag to the test or prod targets. Installed only
+# in a project with deploys on (install.sh --deploy). The job and the logic live in the release kit
+# (Kaina-Ribeiro/release-kit), pinned at @v1, the same workflow the Release caller runs; the kit
+# checks the tag first (any release tag for test; for prod, the last rc of an open line or a final
+# whose code equals its rc). Rules in RELEASING.md. Keep the trigger and inputs; edit only what is
+# passed below.
+#
+# The targets come from vars.DEPLOY_TEST_APPS and vars.DEPLOY_PROD_APPS (in order). The deploy
+# adapter reads vars.DEPLOY_ADAPTER, vars.DEPLOY_COMMAND (your own deploy script), vars.DEPLOY_URL
+# and secrets.DEPLOY_TOKEN; vars.RELEASE_HEALTH_STABLE_S / RELEASE_HEALTH_WAIT_S tune the health check.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Where to
+        type: choice
+        options: [test, prod]
+        default: test
+      tag:
+        description: 'The tag. Empty = last rc of the branch you run from (or the tag you run from).'
+        type: string
+        required: false
+        default: ''
+      dry_run:
+        description: Only print what would happen
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    uses: Kaina-Ribeiro/release-kit/.github/workflows/release.yml@v1
+    with:
+      command: deploy
+      stage: ${{ inputs.stage }}
+      tag: ${{ inputs.tag || '' }}
+      dry_run: ${{ inputs.dry_run == true }}
+      deploy_adapter: ${{ vars.DEPLOY_ADAPTER }}
+      deploy_command: ${{ vars.DEPLOY_COMMAND }}
+      deploy_url: ${{ vars.DEPLOY_URL }}
+      deploy_test_apps: ${{ vars.DEPLOY_TEST_APPS }}
+      deploy_prod_apps: ${{ vars.DEPLOY_PROD_APPS }}
+      health_stable_s: ${{ vars.RELEASE_HEALTH_STABLE_S }}
+      health_wait_s: ${{ vars.RELEASE_HEALTH_WAIT_S }}
+    secrets:
+      deploy_token: ${{ secrets.DEPLOY_TOKEN }}

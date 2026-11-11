@@ -23,8 +23,10 @@
 //   deploy-check gate a deploy: any release tag for test stages; --prod only for the last rc of an
 //                open line that contains the default branch, or a final (vX.Y.Z, vX.Y.Z-hf) whose code
 //                equals its rc (rollback)
-//   deploy       deploy a release tag to the test or prod apps on Cubeship (passes deploy-check first),
-//                then fail unless each app's container comes up and stays up (see waitForHealthy)
+//   deploy       deploy a release tag to the test or prod targets through the deploy adapter
+//                (adapters/<name>.mjs: command runs the project's DEPLOY_COMMAND, cubeship deploys
+//                and waits until each app stays up), in order, stopping at the first that fails;
+//                passes deploy-check first
 //   status       print the release state of the repo (read-only)
 //   report       after an automatic job (rc, deploy-test, final, cleanup): on a failure open the issue
 //                "Release automation failing: <job> on <line>" (label release-kit) or comment on it
@@ -36,12 +38,16 @@
 // Flags: --dry-run (print, change nothing), --no-fetch, --branch, --sha, --head, --version,
 //        --title, --base, --prod, --stage, --apps, --job, --line, --result, --run-url, --error. Env: DEFAULT_BRANCH, GITHUB_REPOSITORY,
 //        GH_TOKEN/GITHUB_TOKEN, TICKET_PATTERN, PR_TITLE, HEAD_REF, BASE_REF, HEAD_SHA,
-//        CUBESHIP_URL, CUBESHIP_TOKEN, DEPLOY_TEST_APPS, DEPLOY_PROD_APPS,
-//        RELEASE_HEALTH_STABLE_S, RELEASE_HEALTH_WAIT_S, GITHUB_REF_TYPE + GITHUB_REF_NAME (a
-//        deploy with no tag takes the tag or the line the run starts from).
+//        DEPLOY_TEST_APPS, DEPLOY_PROD_APPS, DEPLOY_ADAPTER (command or cubeship; empty: command
+//        when DEPLOY_COMMAND is set, else cubeship), DEPLOY_COMMAND, DEPLOY_URL, DEPLOY_TOKEN
+//        (CUBESHIP_URL and CUBESHIP_TOKEN are still read when those two are empty),
+//        RELEASE_HEALTH_STABLE_S, RELEASE_HEALTH_WAIT_S (cubeship), GITHUB_REF_TYPE +
+//        GITHUB_REF_NAME (a deploy with no tag takes the tag or the line the run starts from).
+//        TICKET_PATTERN=none: feature branches and titles carry no ticket (feat/login, feat: add login).
 
 import { execFileSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const TYPES = ['feat', 'fix', 'chore', 'refactor', 'perf', 'docs', 'test', 'ci', 'build', 'revert'];
 const LINE_RE = /^(release|hotfix)\/v(\d+)\.(\d+)$/;
@@ -389,185 +395,65 @@ async function afterShip(head, tag, sha) {
   deleteBranch(head);
 }
 
-// ---------- Cubeship (deploys) ----------
+// ---------- deploys ----------
 
-// Apps that build from Git, whose `ref` can point at a tag.
-const BUILDING_SOURCES = new Set(['dockerfile', 'railpack']);
-const DEPLOY_WAIT_MS = 45 * 60 * 1000;
+// The deploy adapters, in adapters/<name>.mjs beside this file. The kit keeps the rules (which tag
+// may go where, the targets in order, stop at the first failure, the final's check of prod); the
+// adapter deploys a tag to a target and says what a target runs.
+const ADAPTERS = ['cubeship', 'command'];
 
 function stageApps(stage) {
   const raw = opts.apps ?? process.env[stage === 'prod' ? 'DEPLOY_PROD_APPS' : 'DEPLOY_TEST_APPS'] ?? '';
   return raw.split(/[\s,]+/).filter(Boolean);
 }
-const hasCubeship = () => Boolean(process.env.CUBESHIP_URL && process.env.CUBESHIP_TOKEN);
 
-async function cubeship(method, path, body) {
-  const base = (process.env.CUBESHIP_URL || '').replace(/\/+$/, '');
-  if (!base) fail('set CUBESHIP_URL to the Cubeship API, e.g. https://cubeship.example.com/api');
-  if (!process.env.CUBESHIP_TOKEN) fail('set the CUBESHIP_TOKEN secret (a Cubeship API key)');
-  const res = await fetch(`${base}${path}`, {
-    method,
-    headers: {
-      accept: 'application/json',
-      authorization: `Bearer ${process.env.CUBESHIP_TOKEN}`,
-      ...(body ? { 'content-type': 'application/json' } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  if (!res.ok) fail(`Cubeship ${method} ${path}: ${res.status} ${text.slice(0, 300)}`);
-  return text ? JSON.parse(text) : null;
-}
-
-function appPath(ref) {
-  const parts = ref.split('/');
-  if (parts.length !== 3 || parts.some((p) => !p)) fail(`"${ref}" must be project/environment/app`);
-  return `/apps/${parts.map(encodeURIComponent).join('/')}`;
-}
-
-async function getBuildingApp(ref) {
-  const app = await cubeship('GET', appPath(ref));
-  if (!BUILDING_SOURCES.has(app.source)) {
-    fail(`${ref} uses source "${app.source}"; deploys by tag need an app that builds from Git (dockerfile or railpack)`);
+const adapterSet = () => (process.env.DEPLOY_ADAPTER ?? '').trim();
+// DEPLOY_ADAPTER when set; else command when DEPLOY_COMMAND is set; else cubeship (the only
+// adapter before there were adapters, so older installs keep deploying).
+function adapterName() {
+  const name = adapterSet();
+  if (name) {
+    if (!ADAPTERS.includes(name)) fail(`DEPLOY_ADAPTER must be one of: ${ADAPTERS.join(', ')}; got "${name}"`);
+    return name;
   }
-  return app;
+  return (process.env.DEPLOY_COMMAND ?? '').trim() ? 'command' : 'cubeship';
 }
 
-// The API answers a bare array, newest first; `{ items }` is accepted too (the MCP tools' shape).
-async function lastDeployment(ref) {
-  const res = await cubeship('GET', `${appPath(ref)}/deployments`);
-  const list = Array.isArray(res) ? res : (res?.items ?? []);
-  return list[0] ?? null;
-}
+const repoRoot = () => git('rev-parse', '--show-toplevel');
 
-// True when the app is set to `tag` and its latest deploy built that commit successfully.
-async function runs(ref, app, tag) {
-  if (app.ref !== tag) return false;
-  const last = await lastDeployment(ref);
-  return Boolean(last && last.status === 'succeeded' && last.git_sha === commitOf(tag));
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const DEPLOY_POLL_MS = Number(process.env.RELEASE_DEPLOY_POLL_MS) || 10_000;
-const MAX_POLL_ERRORS = 6;
-
-// Short polls, not `?wait=true`: a build outlives the few minutes a proxy keeps a request open,
-// and a dropped poll is retried instead of failing a deploy that is still running.
-async function waitForDeploy(ref, id) {
-  const started = Date.now();
-  let errors = 0;
-  for (;;) {
-    let d;
-    try {
-      d = await cubeship('GET', `${appPath(ref)}/deployments/${id}`);
-      errors = 0;
-    } catch (err) {
-      if (err instanceof Failure || ++errors > MAX_POLL_ERRORS) throw err;
-      warn(`could not read deploy #${id} of ${ref} (${err.cause?.code || err.message}); retrying`);
-    }
-    if (d?.status === 'succeeded' || d?.status === 'skipped') return d;
-    if (d && (d.status === 'failed' || d.cancelled)) fail(`deploy #${id} of ${ref} failed: ${d.error || d.status}`);
-    if (Date.now() - started > DEPLOY_WAIT_MS) fail(`deploy #${id} of ${ref} still ${d?.status ?? 'unknown'} after 45 min`);
-    await sleep(DEPLOY_POLL_MS);
+// Imported only by the commands that deploy or check prod, so a release.mjs downloaded alone
+// (RELEASING.md's curl) still runs status, deploy-check and conventions.
+let adapterCache;
+async function deployAdapter() {
+  if (adapterCache) return adapterCache;
+  const name = adapterName();
+  const url = new URL(`./adapters/${name}.mjs`, import.meta.url);
+  if (!existsSync(fileURLToPath(url))) {
+    fail(`the ${name} deploy adapter is not beside release.mjs (adapters/${name}.mjs); deploys need a full copy of the kit`);
   }
+  const { default: create } = await import(url.href);
+  adapterCache = create({ dryRun, log, act, warn, fail, Failure, commitOf, repoRoot });
+  return adapterCache;
 }
 
-// Seconds from the environment; unset or empty (an unset GitHub variable) means the default.
-function envSeconds(name, fallback) {
-  const raw = (process.env[name] ?? '').trim();
-  if (!raw) return fallback;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) fail(`${name} must be a number of seconds, got "${raw}"`);
-  return n;
-}
-const HEALTH_POLL_MS = Number(process.env.RELEASE_HEALTH_POLL_MS) || 5_000;
-
-// Cubeship calls a deploy "succeeded" once it has started the new container, and the app's
-// `replicas` keep saying `running` while that container crashloops (a missing env var, a failed
-// migration). The live view is /instance/containers: one entry per running container, named by
-// app reference, with its `started_at`, refreshed every ~30 s. A crashloop shows there as a
-// `started_at` that keeps changing, or as no entry at all. So after each deploy: wait up to
-// RELEASE_HEALTH_WAIT_S (default 300) for a snapshot whose containers for this app all started
-// after the deploy began, then require a snapshot RELEASE_HEALTH_STABLE_S (default 60) later to
-// show the same containers, none restarted. RELEASE_HEALTH_STABLE_S=0 turns the check off.
-async function waitForHealthy(ref, deploy) {
-  const stableS = envSeconds('RELEASE_HEALTH_STABLE_S', 60);
-  if (stableS === 0) { log(`  (RELEASE_HEALTH_STABLE_S=0: not checking that ${ref} stays up)`); return; }
-  const waitS = envSeconds('RELEASE_HEALTH_WAIT_S', 300);
-  // A skipped deploy started no container, so whatever runs must just stay up.
-  const since = deploy.status === 'skipped' ? 0 : Date.parse(deploy.created_at ?? '');
-  if (!Number.isFinite(since)) fail(`${ref}: deploy #${deploy.id} has no created_at; cannot tell its containers from older ones`);
-  const started = Date.now();
-  let first = null; // the first snapshot that shows this deploy's containers: { at, starts }
-  let errors = 0;
-  for (;;) {
-    let list = null;
-    try {
-      list = await cubeship('GET', '/instance/containers');
-      errors = 0;
-    } catch (err) {
-      if (err instanceof Failure && /: 40[134] /.test(err.message)) {
-        fail(`${ref}: cannot read Cubeship's live containers to check that the deploy stays up (${err.message}). `
-          + 'Give the CUBESHIP_TOKEN key view on servers (the Deploy role has it), or set RELEASE_HEALTH_STABLE_S=0 to skip the check.');
-      }
-      if (err instanceof Failure || ++errors > MAX_POLL_ERRORS) throw err;
-      warn(`could not read Cubeship's live containers (${err.cause?.code || err.message}); retrying`);
-    }
-    const items = Array.isArray(list) ? list : (list?.items ?? []);
-    if (items.length) {
-      const at = Date.parse(items[0].at ?? '') || Date.now();
-      const starts = items.filter((c) => c.kind === 'app' && c.name === ref).map((c) => c.started_at).sort();
-      const fresh = starts.length > 0 && starts.every((t) => Date.parse(t) >= since);
-      if (!first) {
-        if (fresh) first = { at, starts: starts.join(', ') };
-      } else if (starts.join(', ') !== first.starts) {
-        fail(`${ref}: deploy #${deploy.id} is not staying up: its container started at ${first.starts}, then `
-          + (starts.length ? `started again at ${starts.join(', ')}` : 'stopped')
-          + '. Cubeship still calls the deploy "succeeded". Read its logs in Cubeship, or roll back by deploying the previous tag.');
-      } else if (at - first.at >= stableS * 1000) {
-        return;
-      }
-    }
-    if (!first && Date.now() - started > waitS * 1000) {
-      fail(`${ref}: deploy #${deploy.id} did not come up in ${waitS}s (no container of it running). `
-        + 'Cubeship may still call the deploy "succeeded". Read its logs in Cubeship, or roll back by deploying the previous tag.');
-    }
-    await sleep(HEALTH_POLL_MS);
+// The adapter, ready to use; null under --dry-run when it has no credentials (the caller only prints).
+async function readyAdapter() {
+  const adapter = await deployAdapter();
+  if (adapter.configured()) return adapter;
+  if (dryRun) return null;
+  if (!adapterSet()) {
+    fail('no deploy adapter is configured: set DEPLOY_COMMAND (your own script), or DEPLOY_URL and DEPLOY_TOKEN (Cubeship)');
   }
+  fail(`the ${adapter.name} deploy adapter needs ${adapter.missing}`);
 }
 
-// Points each app at the tag and deploys it, in the listed order (e.g. api before web), and stops
-// at the first app whose container does not stay up, so a broken api never gets a web in front.
-async function deployTag(tag, apps) {
-  for (const ref of apps) {
-    if (dryRun && !hasCubeship()) { act(`set ${ref} to ${tag} and deploy it`); continue; }
-    const app = await getBuildingApp(ref);
-    if (await runs(ref, app, tag)) {
-      // A re-run of a failed job lands here too: "succeeded" in Cubeship says nothing about now.
-      if (!dryRun) await waitForHealthy(ref, await lastDeployment(ref));
-      log(`✓ ${ref} already runs ${tag}`);
-      continue;
-    }
-    // A re-run after a dropped wait: that deploy of this tag is still going, so wait for it.
-    const last = app.ref === tag ? await lastDeployment(ref) : null;
-    if (!dryRun && last?.status === 'pending' && last.git_sha === commitOf(tag)) {
-      log(`${ref} is already deploying ${tag} (deploy #${last.id}); waiting for it`);
-      const done = await waitForDeploy(ref, last.id);
-      await waitForHealthy(ref, done);
-      log(`✓ ${ref} runs ${tag} (deploy #${done.id})`);
-      continue;
-    }
-    act(`set ${ref} to ${tag} (was ${app.ref}) and deploy it`);
-    if (dryRun) continue;
-    // The source and its settings travel together, so the source, repo and recipe go with the ref.
-    await cubeship('PATCH', appPath(ref), {
-      source: app.source, repo: app.repo, ref: tag, ...(app.dockerfile ? { dockerfile: app.dockerfile } : {}),
-    });
-    const started = await cubeship('POST', `${appPath(ref)}/deploy`, {});
-    const done = await waitForDeploy(ref, started.id);
-    log(`  ${ref}: deploy #${done.id} built and started; checking that it stays up`);
-    await waitForHealthy(ref, done);
-    log(`✓ ${ref} runs ${tag} (deploy #${done.id}, ${Math.round((done.duration_ms ?? 0) / 1000)}s)`);
+// Deploys the tag to each target in the listed order (e.g. api before web), and stops at the first
+// target that fails, so a broken api never gets a web in front.
+async function deployTag(tag, targets, stage) {
+  const adapter = await readyAdapter();
+  for (const target of targets) {
+    if (!adapter) { act(`deploy ${tag} to ${target}`); continue; }
+    await adapter.deploy(target, tag, stage);
   }
 }
 
@@ -675,21 +561,31 @@ async function cmdFinal() {
 }
 
 // The final only records what prod already runs: the line's last rc, deployed before the merge.
+// A target whose adapter cannot tell what it runs (an empty `current` from a deploy command) is
+// not checked: a warning, in the log and the job summary, and the final goes on.
 async function checkProdRuns(rc, apps, tag) {
-  if (!hasCubeship()) {
-    if (dryRun) { log(`  (no Cubeship credentials: skipping the check that prod runs ${rc})`); return; }
-    fail(`DEPLOY_PROD_APPS is set but CUBESHIP_URL or CUBESHIP_TOKEN is missing; cannot check that prod runs ${rc}`);
-  }
+  const adapter = await readyAdapter();
+  if (!adapter) { log(`  (no deploy credentials: skipping the check that prod runs ${rc})`); return; }
   const behind = [];
-  for (const ref of apps) {
-    const app = await getBuildingApp(ref);
-    if (!(await runs(ref, app, rc))) behind.push(`${ref} (${app.ref})`);
+  const checked = [];
+  for (const target of apps) {
+    const { runs, current } = await adapter.runs(target, rc, 'prod');
+    if (runs === null) {
+      const msg = `${target}: the deploy command does not say what it runs; not checking that prod runs ${rc}`;
+      warn(msg);
+      summary(msg);
+    } else if (runs) {
+      checked.push(target);
+    } else {
+      behind.push(`${target} (${current})`);
+    }
   }
   if (behind.length) {
     fail(`prod does not run ${rc}: ${behind.join(', ')}; not tagging ${tag}. `
-      + `Fix: Actions → Release → deploy, stage prod, tag ${rc}; then re-run this job.`);
+      + `Fix: deploy ${rc} to prod (Actions → Deploy, stage prod; on an older install: Actions → Release → deploy), `
+      + 'then re-run this job.');
   }
-  log(`✓ prod runs ${rc}: ${apps.join(', ')}`);
+  if (checked.length) log(`✓ prod runs ${rc}: ${checked.join(', ')}`);
 }
 
 async function cmdCutRelease() {
@@ -753,6 +649,7 @@ function cmdConventions() {
   const base = opts.base ?? process.env.BASE_REF ?? '';
   const def = defaultBranch();
   const ticket = process.env.TICKET_PATTERN || '[A-Z][A-Z0-9]+-\\d+';
+  const noTicket = ticket.trim().toLowerCase() === 'none';
   const types = TYPES.join('|');
   const errors = [];
 
@@ -783,7 +680,15 @@ function cmdConventions() {
     }
   } else {
     if (base === def) errors.push(`only release/vX.Y or hotfix/vX.Y can merge into ${def}; target a release line`);
-    if (!githubRevert) {
+    if (!githubRevert && noTicket) {
+      // TICKET_PATTERN=none: plain short names and titles; a ticket in them is just text.
+      if (!new RegExp(`^(${types})/[A-Za-z0-9]+(-[A-Za-z0-9]+)*$`).test(head)) {
+        errors.push(`branch "${head}" must be <type>/short-name, e.g. feat/login (types: ${types})`);
+      }
+      const titleM = new RegExp(`^(${types})(\\([^)]+\\))?!?: (.+)$`).exec(title);
+      if (!titleM) errors.push(`title "${title}" must be type: summary, e.g. feat: add login`);
+      else if (/^[A-Z]/.test(titleM[3])) errors.push(`summary "${titleM[3]}" must start lowercase (imperative)`);
+    } else if (!githubRevert) {
       const branchM = new RegExp(`^(${types})/(${ticket})-[a-z0-9]+(-[a-z0-9]+)*$`).exec(head);
       if (!branchM) errors.push(`branch "${head}" must be <type>/<TICKET>-short-name, e.g. feat/ABC-12-login (types: ${types})`);
       const titleM = new RegExp(`^(${types})\\((${ticket})\\)!?: (.+)$`).exec(title);
@@ -902,7 +807,7 @@ async function cmdDeploy() {
   }
   checkDeploy(name, stage === 'prod');
   log(`deploying ${name} to ${stage}: ${apps.join(' → ')}`);
-  await deployTag(name, apps);
+  await deployTag(name, apps, stage);
   const targets = apps.map((a) => `\`${a}\``).join(', ');
   outcome(`Deployed **${name}** to ${stage}: ${targets}`, `deploy **${name}** to ${stage}: ${targets}`);
 }
