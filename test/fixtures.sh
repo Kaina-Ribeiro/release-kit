@@ -577,6 +577,59 @@ check "the workflow moves the kit out of the workspace before the checks" \
   grep -qF 'mv .release-kit "$RUNNER_TEMP/release-kit"' "$kit/.github/workflows/pr-checks.yml"
 check "the caller passes CHECKS_COMMAND" grep -qF 'checks_command: ${{ vars.CHECKS_COMMAND }}' "$kit/workflows/pr-checks.yml"
 
+echo; echo "=== 23. install.sh: one command, tags only by default, deploys on request or when already on"
+newrepo() { git init --quiet "$scratch/$1" && git -C "$scratch/$1" remote add origin https://github.com/example/proj.git; }
+# The owner type is given, so install.sh never calls gh.
+inst() { RELEASE_KIT_OWNER_TYPE=Organization bash "$kit/install.sh" "$@" 2>&1; }
+kitdir=$(cd "$kit" && { pwd -W 2>/dev/null || pwd; })
+case $kitdir in /*) kiturl="file://$kitdir" ;; *) kiturl="file:///$kitdir" ;; esac
+wf=.github/workflows
+newrepo inst-a
+out=$(inst "$scratch/inst-a"); code=$?; printf '%s\n' "$out"
+check "a plain install succeeds" [ "$code" -eq 0 ]
+for f in $wf/release.yml $wf/pr-checks.yml .github/rulesets/default-branch.json \
+  .github/rulesets/version-lines.json .github/rulesets/version-tags.json RELEASING.md; do
+  check "a plain install copies $f" [ -f "$scratch/inst-a/$f" ]
+done
+check "a plain install has no Deploy workflow" [ ! -e "$scratch/inst-a/$wf/deploy.yml" ]
+check "it says deploys are off" grep -qF "Deploys are off" <<<"$out"
+check "the installed Release has no deploy in its menu" not grep -qF "cut-hotfix, deploy" "$scratch/inst-a/$wf/release.yml"
+newrepo inst-b
+out=$(inst "$scratch/inst-b" --deploy); printf '%s\n' "$out"
+check "--deploy copies the Deploy workflow" [ -f "$scratch/inst-b/$wf/deploy.yml" ]
+check "--deploy prints the deploy command variable" grep -qF DEPLOY_COMMAND <<<"$out"
+check "--deploy prints the prod targets variable" grep -qF DEPLOY_PROD_APPS <<<"$out"
+newrepo inst-c; mkdir -p "$scratch/inst-c/$wf"
+echo "        options: [cut-release, cut-hotfix, deploy]" > "$scratch/inst-c/$wf/release.yml"
+out=$(inst "$scratch/inst-c"); code=$?; printf '%s\n' "$out"
+check "an old Release caller is not overwritten without --force" [ "$code" -eq 1 ]
+check "it says to re-run with --force" grep -qF "re-run with --force" <<<"$out"
+out=$(inst "$scratch/inst-c" --force); printf '%s\n' "$out"
+check "an old Release caller with deploy keeps deploys on" [ -f "$scratch/inst-c/$wf/deploy.yml" ]
+check "the new Release offers only the cuts" grep -qF "options: [cut-release, cut-hotfix]" "$scratch/inst-c/$wf/release.yml"
+check "it prints the move to DEPLOY_URL and DEPLOY_TOKEN" \
+  grep -qE "gh variable set DEPLOY_URL .*CUBESHIP_URL" <<<"$out"
+check "and why: without it the next deploy fails" grep -qF "no deploy adapter is configured" <<<"$out"
+newrepo inst-d
+(cd "$scratch/inst-d" && inst >/dev/null)
+check "no target: installs into the current folder" [ -f "$scratch/inst-d/$wf/release.yml" ]
+newrepo inst-e
+out=$(RELEASE_KIT_RAW_BASE=$kiturl inst "$scratch/inst-e" --deploy); code=$?; printf '%s\n' "$out"
+check "the download mode succeeds" [ "$code" -eq 0 ]
+check "the download mode installs the same callers" diff -r "$scratch/inst-b/.github" "$scratch/inst-e/.github"
+check "the download mode installs the same RELEASING.md" cmp "$scratch/inst-b/RELEASING.md" "$scratch/inst-e/RELEASING.md"
+newrepo inst-f
+out=$(RELEASE_KIT_RAW_BASE=file:///no/such/kit inst "$scratch/inst-f"); code=$?; printf '%s\n' "$out"
+check "a failed download fails the install" [ "$code" -ne 0 ]
+check "and copies nothing" [ ! -e "$scratch/inst-f/.github" -a ! -e "$scratch/inst-f/RELEASING.md" ]
+newrepo inst-g
+inst "$scratch/inst-g" --deploy --kit-ref feat/x >/dev/null
+for f in release deploy pr-checks; do
+  check "--kit-ref pins $f.yml at @feat/x" grep -qF "@feat/x" "$scratch/inst-g/$wf/$f.yml"
+  check "and leaves no @v1 in $f.yml" not grep -qF "@v1" "$scratch/inst-g/$wf/$f.yml"
+done
+check "install.sh parses" bash -n "$kit/install.sh"
+
 echo
 if [ $misses -ne 0 ]; then echo "✗ $misses expectation(s) missed"; exit 1; fi
 echo "✓ all expectations met"
