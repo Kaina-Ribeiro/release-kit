@@ -223,7 +223,8 @@ becomes `v2`, and each repository moves to it by PR.
    token or an admin's fine-grained PAT with contents and pull-requests write. Without it the
    workflow falls back to `GITHUB_TOKEN`, and GitHub does not trigger workflows for what that
    token creates: sync PRs get no `pr-checks / checks` / `pr-checks / conventions`
-   runs and cannot merge, and pushed tags do not start tag-based deploys. If the token is not an admin's, add its app to the
+   runs (or a `PR checks` run that fails before any job starts; re-run it yourself and it
+   passes) and cannot merge, and pushed tags do not start tag-based deploys. If the token is not an admin's, add its app to the
    `version-tags` and `version-lines` ruleset bypass lists.
 4. **Rulesets**, applied with `gh api` (see `install.sh` output):
    - `default-branch`: PR with 1 approval, `pr-checks / checks` + `pr-checks / conventions`
@@ -252,7 +253,8 @@ becomes `v2`, and each repository moves to it by PR.
    `CHECKS_SCRIPTS` (the Node steps; see `pr-checks.yml`).
 6. **Deploys** (optional): install with `install.sh --deploy`, which adds
    `.github/workflows/deploy.yml` (it turns itself on when the repository already has that file,
-   or a Release workflow with `deploy` in its menu). Variables `DEPLOY_TEST_APPS` and
+   or a Release workflow with `deploy` in its menu). Actions → Deploy exists only once that
+   file is on the default branch. Variables `DEPLOY_TEST_APPS` and
    `DEPLOY_PROD_APPS` (the targets, space-separated, in deploy order; an empty list turns that
    stage off), and one adapter (see "Deploys"); `DEPLOY_ADAPTER` (`command` or `cubeship`)
    forces one, otherwise `command` when `DEPLOY_COMMAND` is set, else `cubeship`:

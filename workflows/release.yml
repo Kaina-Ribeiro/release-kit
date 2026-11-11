@@ -5,7 +5,7 @@
 #
 # Token: secrets.RELEASE_TOKEN if set (a GitHub App token or an admin's fine-grained PAT), else
 # GITHUB_TOKEN. With GITHUB_TOKEN, sync PRs, tags and branches it creates do not trigger other
-# workflows, so required checks never run on sync PRs. See RELEASING.md, "Setup".
+# workflows, so required checks do not pass on sync PRs. See RELEASING.md, "Setup".
 # Deploys (optional): without vars.DEPLOY_TEST_APPS and vars.DEPLOY_PROD_APPS nothing is deployed
 # and the kit only tags. With them, each rc deploys to the test targets from here, and manual
 # deploys run from the Deploy workflow (.github/workflows/deploy.yml). The deploy adapter reads

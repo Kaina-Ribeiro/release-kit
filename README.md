@@ -94,6 +94,9 @@ Do this **before** step 3. After step 3, only version lines can merge into the d
 On this one PR the check `pr-checks / conventions` is red, for that same reason. It is not
 required yet. Merge anyway.
 
+Installing again later, with the rulesets already on: merge that PR as an admin (bypass), or
+open it into the open version line and let it reach the default branch on release day.
+
 ### Step 3: apply the GitHub settings
 
 Run the commands the script printed, from the project's folder, in order. They already have
@@ -103,7 +106,7 @@ the project's `owner/repo` filled in.
 |:--|:--|:--|
 | 1 | Merge methods: merge commit and squash on, rebase off | Feature PRs are squashed; a version line is merged with a merge commit |
 | 2 | GitHub Actions may open pull requests | The kit opens the sync PRs |
-| 3 | Secret `RELEASE_TOKEN` | Without it, the PRs and tags the kit creates start no workflow, so sync PRs never get their checks |
+| 3 | Secret `RELEASE_TOKEN` | Without it, the PRs and tags the kit creates start no workflow: a sync PR gets no checks, or a `PR checks` run that fails before any job starts. Re-run that run yourself and it passes |
 | 4 | The three rulesets | Protect the default branch, the version lines and the `v*` tags |
 | 5 | Optional variables | `TICKET_PATTERN`: the ticket id format, or `none` for branches and titles without a ticket (`feat/login`, `feat: add login`). `CHECKS_COMMAND`: your own PR check (e.g. `make lint`), run instead of the Node steps. `CHECKS_DIRS`, `CHECKS_SCRIPTS`: what the Node steps of the `checks` job run |
 
@@ -127,7 +130,10 @@ More detail on each setting: `RELEASING.md`, "Setup".
 Skip this step and the kit only creates tags; deploy them with your own tool.
 
 To let the kit deploy, install with `--deploy` (it copies `.github/workflows/deploy.yml` and
-prints item 6), then set the targets and one adapter in the project:
+prints item 6), then set the targets and one adapter in the project.
+
+GitHub shows Actions → Deploy only once `deploy.yml` is on the default branch. Get it there
+before the first release day that needs a prod deploy.
 
 | Name | Kind | Value |
 |:--|:--|:--|
