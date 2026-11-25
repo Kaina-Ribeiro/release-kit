@@ -39,7 +39,7 @@ createServer((req, res) => {
       }
       return send(200, items);
     }
-    const m = /^\/apps\/([^/]+)\/([^/]+)\/([^/]+)(\/deploy|\/deployments(?:\/(\d+))?)?$/.exec(url.pathname);
+    const m = /^\/apps\/([^/]+)\/([^/]+)\/([^/]+)(\/deploy|\/env|\/deployments(?:\/(\d+))?)?$/.exec(url.pathname);
     if (!m) return send(404, { error: 'no route' });
     const ref = `${m[1]}/${m[2]}/${m[3]}`;
     const app = apps.get(ref);
@@ -52,6 +52,15 @@ createServer((req, res) => {
       console.error(`[mock] ${ref} ref → ${app.ref}`);
       return send(200, { name: m[3], ...app });
     }
+    // Like Cubeship, PATCH /env touches only the keys named in `set`. demo/test/web refuses it,
+    // to show that a refused env write does not stop the deploy.
+    if (m[4] === '/env' && req.method === 'PATCH') {
+      if (ref === 'demo/test/web') return send(403, { error: 'no env for this app' });
+      app.env = { ...app.env, ...json.set };
+      console.error(`[mock] ${ref} env APP_VERSION → ${app.env.APP_VERSION}`);
+      return send(200, { vars: app.env });
+    }
+    if (m[4] === '/env' && req.method === 'GET') return send(200, { vars: app.env ?? {} });
     if (m[4] === '/deploy' && req.method === 'POST') {
       const d = { id: nextId++, status: 'pending', reads: 0, git_branch: app.ref, git_sha: shaOf(app.ref), duration_ms: 1000, image: 'x', has_logs: false, created_at: new Date().toISOString() };
       deploys.get(ref).unshift(d);

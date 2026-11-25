@@ -247,7 +247,9 @@ export DEPLOY_TEST_APPS="demo/test/api demo/test/web" DEPLOY_PROD_APPS="demo/pro
 tag v0.3.1-rc origin/release/v0.3
 echo "  (hotfix/v0.2 still exists, so a deploy with no tag and no line to start from has two to pick)"
 expect_out fail "2 lines are open" deploy --stage test --dry-run
-expect ok deploy --stage test --branch release/v0.3
+echo "  (each deploy sets APP_VERSION to the tag; demo/test/web refuses the env write and still deploys)"
+expect_out ok "demo/test/web: could not set APP_VERSION=v0.3.1-rc" deploy --stage test --branch release/v0.3
+check "demo/test/api got APP_VERSION=v0.3.1-rc" grep -q '"APP_VERSION":"v0.3.1-rc"'   <(curl -s -H 'authorization: Bearer test-key' "http://127.0.0.1:$port/apps/demo/test/api/env")
 expect ok deploy --stage test --branch release/v0.3
 expect_out fail "(that is v0.3.1-rc)" deploy --stage prod v0.3.0-rc.1
 expect_out fail "lacks what $def has" deploy-check v0.3.1-rc --prod
