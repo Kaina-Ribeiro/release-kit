@@ -150,6 +150,10 @@ hotfix and a release): run it from the line's branch instead.
 A target is `project/environment/app`. The kit points the app's `ref` at the tag, deploys it and
 waits.
 
+**The app knows its version.** Before each deploy the kit sets the app's env var `APP_VERSION` to
+the tag (`v1.29.3-rc`), touching no other variable, so the app can show the version it runs. If
+Cubeship refuses that write, the log warns and the deploy goes on.
+
 **A deploy is green only if the app stays up.** Cubeship calls a deploy "succeeded" as soon as
 it starts the new container, even when the process dies a second later (a missing env var, a
 failed migration) and crashloops. So after each app, `deploy` watches Cubeship's live container

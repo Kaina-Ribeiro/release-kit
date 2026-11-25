@@ -3,6 +3,8 @@
 // Reads DEPLOY_URL and DEPLOY_TOKEN, else CUBESHIP_URL and CUBESHIP_TOKEN (installs from before
 // the adapters). RELEASE_HEALTH_STABLE_S and RELEASE_HEALTH_WAIT_S tune the health check.
 // Loaded by release.mjs only for a deploy or the final's check that prod runs the rc.
+// Each deploy also sets the app's env var APP_VERSION to the tag, so the app can show the version
+// it runs. That write never fails a deploy: when Cubeship refuses it, the log warns and goes on.
 
 // Apps that build from Git, whose `ref` can point at a tag.
 const BUILDING_SOURCES = new Set(['dockerfile', 'railpack']);
@@ -147,6 +149,16 @@ export default function create({ dryRun, log, act, warn, fail, Failure, commitOf
   }
 
   // Points the app at the tag and deploys it; ends once its container stays up.
+  // Before the deploy, so the new container starts with it. Only APP_VERSION is touched.
+  async function setVersion(ref, tag) {
+    try {
+      await cubeship('PATCH', `${appPath(ref)}/env`, { set: { APP_VERSION: tag } });
+    } catch (e) {
+      if (!(e instanceof Failure)) throw e;
+      warn(`${ref}: could not set APP_VERSION=${tag} (${e.message}); deploying anyway`);
+    }
+  }
+
   async function deploy(ref, tag) {
     const app = await getBuildingApp(ref);
     if (await runs(ref, app, tag)) {
@@ -166,6 +178,7 @@ export default function create({ dryRun, log, act, warn, fail, Failure, commitOf
     }
     act(`set ${ref} to ${tag} (was ${app.ref}) and deploy it`);
     if (dryRun) return;
+    await setVersion(ref, tag);
     // The source and its settings travel together, so the source, repo and recipe go with the ref.
     await cubeship('PATCH', appPath(ref), {
       source: app.source, repo: app.repo, ref: tag, ...(app.dockerfile ? { dockerfile: app.dockerfile } : {}),
